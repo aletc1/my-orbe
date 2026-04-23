@@ -4,6 +4,12 @@ import { SHOW_STATUSES, SHOW_KINDS } from '../types/status.js'
 export const ShowStatusSchema = z.enum(SHOW_STATUSES)
 export const ShowKindSchema = z.enum(SHOW_KINDS)
 
+export const ProviderLinkSchema = z.object({
+  key: z.string(),
+  displayName: z.string(),
+  url: z.string().url(),
+})
+
 export const EpisodeProgressSchema = z.object({
   id: z.string().uuid(),
   episodeNumber: z.number().int(),
@@ -12,6 +18,7 @@ export const EpisodeProgressSchema = z.object({
   airDate: z.string().nullable(), // ISO date string
   watched: z.boolean(),
   playheadSeconds: z.number().int(),
+  providers: z.array(ProviderLinkSchema),
 })
 
 export const SeasonDetailSchema = z.object({
@@ -39,7 +46,7 @@ export const ShowListItemSchema = z.object({
   totalEpisodes: z.number().int(),
   watchedEpisodes: z.number().int(),
   lastActivityAt: z.string(),
-  providerKeys: z.array(z.string()),
+  providers: z.array(ProviderLinkSchema),
 })
 
 export const ShowDetailSchema = ShowListItemSchema.extend({
@@ -61,5 +68,6 @@ export type ShowListItem = z.infer<typeof ShowListItemSchema>
 export type ShowDetail = z.infer<typeof ShowDetailSchema>
 export type SeasonDetail = z.infer<typeof SeasonDetailSchema>
 export type EpisodeProgress = z.infer<typeof EpisodeProgressSchema>
+export type ProviderLink = z.infer<typeof ProviderLinkSchema>
 export type PatchShowBody = z.infer<typeof PatchShowBodySchema>
 export type PatchEpisodeBody = z.infer<typeof PatchEpisodeBodySchema>

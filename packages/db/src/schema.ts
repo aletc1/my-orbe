@@ -19,6 +19,8 @@ export const providers = pgTable('providers', {
   displayName: text('display_name').notNull(),
   enabled: boolean('enabled').notNull().default(true),
   kind: text('kind').notNull().default('general'),
+  showUrlTemplate: text('show_url_template'),
+  episodeUrlTemplate: text('episode_url_template'),
 })
 
 // ─── User accounts ────────────────────────────────────────────────────────────
