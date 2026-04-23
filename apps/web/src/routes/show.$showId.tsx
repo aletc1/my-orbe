@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowLeft, Heart, HeartOff, Trash2, RotateCcw, CheckCheck } from 'lucide-react'
+import { formatRelative } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { Q } from '@/lib/queryKeys'
 import type { ShowDetail } from '@kyomiru/shared/contracts/shows'
@@ -174,6 +175,14 @@ function ShowDetailPage() {
                       </Button>
                       <span className="text-muted-foreground w-8 shrink-0">{ep.episodeNumber}.</span>
                       <span className="flex-1 truncate">{ep.title ?? `Episode ${ep.episodeNumber}`}</span>
+                      {ep.watchedAt && (
+                        <span
+                          className="text-xs text-muted-foreground shrink-0 tabular-nums"
+                          title={new Date(ep.watchedAt).toLocaleString()}
+                        >
+                          {formatRelative(ep.watchedAt)}
+                        </span>
+                      )}
                       {ep.durationSeconds && (
                         <span className="text-xs text-muted-foreground shrink-0">
                           {Math.floor(ep.durationSeconds / 60)}m

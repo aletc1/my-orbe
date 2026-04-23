@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, XCircle, AlertCircle, Chrome } from 'lucide-react'
+import { formatRelative } from '@/lib/utils'
 
 export const Route = createFileRoute('/services')({
   component: ServicesPage,
@@ -33,19 +34,6 @@ function StatusIcon({ status }: { status: ServiceInfo['status'] }) {
   return <XCircle className="h-5 w-5 text-muted-foreground" />
 }
 
-function formatWhen(iso: string | null): string | null {
-  if (!iso) return null
-  const d = new Date(iso)
-  const diffMs = Date.now() - d.getTime()
-  const mins = Math.round(diffMs / 60_000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  if (days < 7) return `${days}d ago`
-  return d.toLocaleDateString()
-}
 
 function ServicesPage() {
   const { data: services, isLoading } = useQuery<ServiceInfo[]>({
@@ -69,7 +57,7 @@ function ServicesPage() {
       </div>
       {(services ?? []).map((svc) => {
         const meta = PROVIDER_META[svc.providerKey] ?? { tagline: '', connectionKind: 'bearer' as const }
-        const lastSync = formatWhen(svc.lastSyncAt)
+        const lastSync = formatRelative(svc.lastSyncAt)
         return (
           <Card key={svc.providerKey}>
             <CardHeader className="flex flex-row items-center gap-3 pb-2">
