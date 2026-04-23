@@ -53,13 +53,24 @@ export async function searchAniList(title: string, _year?: number): Promise<AniL
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ query: MEDIA_QUERY, variables: { search: title } }),
     })
-    if (!resp.ok) return null
+    if (!resp.ok) {
+      console.warn(`[anilist] HTTP ${resp.status} for "${title}"`)
+      return null
+    }
     const json = await resp.json() as { data?: { Media?: AniListMedia } }
     const media = json.data?.Media
     if (!media) return null
 
+    // Score against all available titles — the Crunchyroll title may match the
+    // native or romaji even when the AniList english differs significantly.
+    const candidates = [media.title.english, media.title.romaji, media.title.native]
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+    const t = title.toLowerCase()
+    const confidence = candidates.reduce(
+      (best, c) => Math.max(best, jaroWinkler(t, c.toLowerCase())),
+      0,
+    )
     const resultTitle = media.title.english ?? media.title.romaji ?? media.title.native ?? ''
-    const confidence = jaroWinkler(title.toLowerCase(), resultTitle.toLowerCase())
     if (confidence < 0.8) return null
 
     const desc = media.description?.replace(/<[^>]*>/g, '')
@@ -80,7 +91,8 @@ export async function searchAniList(title: string, _year?: number): Promise<AniL
         .filter((t) => t.length > 0),
       confidence,
     }
-  } catch {
+  } catch (err) {
+    console.warn(`[anilist] search failed for "${title}":`, err instanceof Error ? err.message : err)
     return null
   }
 }

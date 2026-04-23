@@ -60,11 +60,13 @@ export async function recomputeUserShowState(
   ) {
     // Previously fully watched but new episodes appeared
     newStatus = 'new_content'
+  } else if (existing.status === 'new_content' && watched < total) {
+    // Sticky: stay in new_content until the user fully catches up
+    newStatus = 'new_content'
   } else if (watched > 0) {
     newStatus = 'in_progress'
   } else {
-    // No watch data yet but the show is in the library — keep existing or default
-    newStatus = existing.status === 'new_content' ? 'new_content' : 'in_progress'
+    newStatus = 'in_progress'
   }
 
   // When transitioning to watched, clear queue position

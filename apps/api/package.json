@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "cron:run": "tsx src/cron.ts",
-    "backfill:enrichment": "tsx src/backfillEnrichment.ts"
+    "backfill:enrichment": "tsx src/backfillEnrichment.ts",
+    "backfill:state": "tsx src/backfillShowState.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.1",

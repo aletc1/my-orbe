@@ -3,6 +3,23 @@ import type { IngestBody, IngestItem, IngestShow, IngestSeason, IngestEpisode } 
 const CR_BASE = 'https://www.crunchyroll.com/content/v2'
 const PAGE_SIZE = 100
 const PAGE_DELAY_MS = 200
+const REQUEST_TIMEOUT_MS = 30_000
+
+export class CrunchyrollAuthError extends Error {
+  status: number
+  constructor(status: number) {
+    super(`Crunchyroll session expired (HTTP ${status}). Open crunchyroll.com and browse any page to refresh your session, then try again.`)
+    this.name = 'CrunchyrollAuthError'
+    this.status = status
+  }
+}
+
+export class CrunchyrollTimeoutError extends Error {
+  constructor() {
+    super('Crunchyroll request timed out. Check your connection or reopen crunchyroll.com, then try again.')
+    this.name = 'CrunchyrollTimeoutError'
+  }
+}
 
 export interface CrunchyrollPanel {
   id: string
@@ -97,14 +114,28 @@ export interface SeriesCatalog {
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 async function authedFetch<T>(url: string, jwt: string): Promise<T> {
-  const resp = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      'Content-Type': 'application/json',
-    },
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let resp: Response
+  try {
+    resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new CrunchyrollTimeoutError()
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+
   if (resp.status === 401 || resp.status === 403) {
-    throw new Error(`Crunchyroll auth expired (HTTP ${resp.status}). Reload crunchyroll.com and try again.`)
+    throw new CrunchyrollAuthError(resp.status)
   }
   if (!resp.ok) {
     throw new Error(`Crunchyroll HTTP ${resp.status} for ${url}`)
@@ -152,51 +183,60 @@ async function fetchSeasonEpisodes(seasonId: string, jwt: string): Promise<Crunc
   return json.data ?? []
 }
 
+export type CatalogProgress = { index: number; total: number; seriesId: string; ok: boolean; reason?: string }
+
+async function fetchOneSeriesCatalog(
+  seriesId: string,
+  jwt: string,
+  onSeasonFailure: (reason: string) => void,
+): Promise<SeriesCatalog> {
+  const seasons = await fetchSeriesSeasons(seriesId, jwt)
+  const catalog: SeriesCatalog = { seriesId, seasons: [] }
+
+  for (const s of seasons) {
+    await delay(PAGE_DELAY_MS)
+    try {
+      const eps = await fetchSeasonEpisodes(s.id, jwt)
+      const number = s.season_number ?? s.season_sequence_number ?? catalog.seasons.length + 1
+      catalog.seasons.push({
+        id: s.id,
+        number,
+        ...(s.title && { title: s.title }),
+        episodes: eps,
+      })
+    } catch (err) {
+      // Skip the offending season but keep collecting the rest.
+      onSeasonFailure(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return catalog
+}
+
 /**
- * Pull the full season+episode catalog for every `seriesId` passed in.
+ * Stream season+episode catalogs for every `seriesId`, yielding each as it
+ * completes. The caller can pump catalogs to the server incrementally
+ * (producer/consumer) instead of blocking on all 200+ fetches first.
  *
  * Throttled identically to history pagination and resilient to individual
  * series failures — a 404 on one show will not abort the whole run. Each
- * successful series is reported via `onProgress`.
+ * successful series is both yielded and reported via `onProgress`; failed
+ * series are only reported via `onProgress`.
  */
-export async function fetchCatalogsForSeries(
+export async function* streamCatalogsForSeries(
   seriesIds: string[],
   jwt: string,
-  onProgress: (ev: { index: number; total: number; seriesId: string; ok: boolean; reason?: string }) => void,
-): Promise<Map<string, SeriesCatalog>> {
-  const out = new Map<string, SeriesCatalog>()
+  onProgress: (ev: CatalogProgress) => void,
+): AsyncGenerator<SeriesCatalog, void, void> {
   let idx = 0
   for (const seriesId of seriesIds) {
     idx++
     try {
-      const seasons = await fetchSeriesSeasons(seriesId, jwt)
-      const catalog: SeriesCatalog = { seriesId, seasons: [] }
-
-      for (const s of seasons) {
-        await delay(PAGE_DELAY_MS)
-        try {
-          const eps = await fetchSeasonEpisodes(s.id, jwt)
-          const number = s.season_number ?? s.season_sequence_number ?? catalog.seasons.length + 1
-          catalog.seasons.push({
-            id: s.id,
-            number,
-            ...(s.title && { title: s.title }),
-            episodes: eps,
-          })
-        } catch (err) {
-          // Skip the offending season and continue with the rest.
-          onProgress({
-            index: idx,
-            total: seriesIds.length,
-            seriesId,
-            ok: false,
-            reason: err instanceof Error ? err.message : String(err),
-          })
-        }
-      }
-
-      out.set(seriesId, catalog)
+      const catalog = await fetchOneSeriesCatalog(seriesId, jwt, (reason) => {
+        onProgress({ index: idx, total: seriesIds.length, seriesId, ok: false, reason })
+      })
       onProgress({ index: idx, total: seriesIds.length, seriesId, ok: true })
+      yield catalog
     } catch (err) {
       onProgress({
         index: idx,
@@ -207,6 +247,22 @@ export async function fetchCatalogsForSeries(
       })
     }
     await delay(PAGE_DELAY_MS)
+  }
+}
+
+/**
+ * Pull the full season+episode catalog for every `seriesId`, returning them
+ * all at once. Preserved for the single-shot `/ingest` path and tests; new
+ * code should prefer `streamCatalogsForSeries`.
+ */
+export async function fetchCatalogsForSeries(
+  seriesIds: string[],
+  jwt: string,
+  onProgress: (ev: CatalogProgress) => void,
+): Promise<Map<string, SeriesCatalog>> {
+  const out = new Map<string, SeriesCatalog>()
+  for await (const catalog of streamCatalogsForSeries(seriesIds, jwt, onProgress)) {
+    out.set(catalog.seriesId, catalog)
   }
   return out
 }
@@ -219,99 +275,105 @@ function firstPoster(panel: CrunchyrollPanel | undefined): string | undefined {
   return sorted[0]?.source
 }
 
+function historyItemToIngest(r: CrunchyrollHistoryItem): IngestItem {
+  const meta = r.panel?.episode_metadata
+  const seriesId = meta?.series_id
+  const panelId = r.panel?.id ?? r.id
+
+  return {
+    externalItemId: panelId,
+    ...(seriesId && { externalShowId: seriesId }),
+    ...(meta?.season_id && { externalSeasonId: meta.season_id }),
+    watchedAt: new Date(r.date_played).toISOString(),
+    ...(typeof r.playhead === 'number' && { playheadSeconds: Math.max(0, Math.floor(r.playhead)) }),
+    ...(typeof meta?.duration_ms === 'number' && {
+      durationSeconds: Math.max(0, Math.floor(meta.duration_ms / 1000)),
+    }),
+    fullyWatched: Boolean(r.fully_watched),
+    raw: {
+      panel_id: panelId,
+      series_title: meta?.series_title,
+      episode_number: meta?.episode_number,
+      season_number: meta?.season_number,
+    },
+  }
+}
+
 /**
- * Build the ingest payload from watch history plus the full per-series
- * catalog.
- *
- * `items[]` contains every watched event (for the user's progress).
- * `shows[]` is driven off the catalog so every known season/episode — watched
- * or not — is sent to the API. The API dedupes on natural keys so this is
- * idempotent.
- *
- * If a catalog fetch failed for a given series (missing from `catalogs`), we
- * fall back to the partial tree derived from history entries so at minimum
- * the watched episodes still land.
+ * Map raw Crunchyroll history rows to ingest items. Pure function; order
+ * preserved.
  */
-export function buildIngestPayload(
-  raw: CrunchyrollHistoryItem[],
-  catalogs: Map<string, SeriesCatalog>,
-): IngestBody {
-  const items: IngestItem[] = []
-  const showsByExt = new Map<string, IngestShow>()
+export function buildItemsFromHistory(raw: CrunchyrollHistoryItem[]): IngestItem[] {
+  return raw.map(historyItemToIngest)
+}
 
-  // First, emit shows for which we have full catalog data.
-  for (const [seriesId, cat] of catalogs) {
-    const sampleHistory = raw.find((r) => r.panel?.episode_metadata?.series_id === seriesId)
-    const sampleMeta = sampleHistory?.panel?.episode_metadata
-    const title = sampleMeta?.series_title ?? sampleMeta?.season_slug_title ?? seriesId
-    const cover = firstPoster(sampleHistory?.panel)
+/**
+ * Map one series' catalog to an ingest `show`, using any matching history
+ * row (passed via `sampleHistory`) to source the series title and cover.
+ */
+export function buildShowFromCatalog(
+  catalog: SeriesCatalog,
+  sampleHistory?: CrunchyrollHistoryItem,
+): IngestShow {
+  const sampleMeta = sampleHistory?.panel?.episode_metadata
+  const title = sampleMeta?.series_title ?? sampleMeta?.season_slug_title ?? catalog.seriesId
+  const cover = firstPoster(sampleHistory?.panel)
 
-    const seasons: IngestSeason[] = cat.seasons.map((s) => ({
-      number: s.number,
-      ...(s.title && { title: s.title }),
-      episodes: s.episodes.map<IngestEpisode>((e) => {
-        const number = e.episode_number ?? e.sequence_number ?? 0
-        return {
-          number,
-          ...(e.title && { title: e.title }),
-          ...(typeof e.duration_ms === 'number' && {
-            durationSeconds: Math.max(0, Math.floor(e.duration_ms / 1000)),
-          }),
-          ...(e.episode_air_date && { airDate: e.episode_air_date.slice(0, 10) }),
-          externalId: e.id,
-        }
-      }),
-    }))
+  const seasons: IngestSeason[] = catalog.seasons.map((s) => ({
+    number: s.number,
+    ...(s.title && { title: s.title }),
+    episodes: s.episodes.map<IngestEpisode>((e) => {
+      const number = e.episode_number ?? e.sequence_number ?? 0
+      return {
+        number,
+        ...(e.title && { title: e.title }),
+        ...(typeof e.duration_ms === 'number' && {
+          durationSeconds: Math.max(0, Math.floor(e.duration_ms / 1000)),
+        }),
+        ...(e.episode_air_date && { airDate: e.episode_air_date.slice(0, 10) }),
+        externalId: e.id,
+      }
+    }),
+  }))
 
-    showsByExt.set(seriesId, {
-      externalId: seriesId,
-      title,
-      kind: 'anime',
-      seasons,
-      ...(cover && { coverUrl: cover }),
-    })
+  return {
+    externalId: catalog.seriesId,
+    title,
+    kind: 'anime',
+    seasons,
+    ...(cover && { coverUrl: cover }),
+  }
+}
+
+/**
+ * Fallback show tree built from a group of history rows when the catalog
+ * fetch for that series failed. Emits just the watched episodes so progress
+ * still lands — the API dedupes on natural keys.
+ */
+export function buildShowFromHistoryFallback(
+  seriesId: string,
+  historyForSeries: CrunchyrollHistoryItem[],
+): IngestShow | null {
+  if (historyForSeries.length === 0) return null
+
+  const sample = historyForSeries[0]!
+  const sampleMeta = sample.panel?.episode_metadata
+  const title = sampleMeta?.series_title ?? sampleMeta?.season_slug_title ?? seriesId
+  const cover = firstPoster(sample.panel)
+
+  const show: IngestShow = {
+    externalId: seriesId,
+    title,
+    kind: 'anime',
+    seasons: [],
+    ...(cover && { coverUrl: cover }),
   }
 
-  // Walk history to emit watched items AND to fill in trees for series whose
-  // catalog fetch failed.
-  for (const r of raw) {
+  for (const r of historyForSeries) {
     const meta = r.panel?.episode_metadata
-    const seriesId = meta?.series_id
     const panelId = r.panel?.id ?? r.id
-
-    items.push({
-      externalItemId: panelId,
-      ...(seriesId && { externalShowId: seriesId }),
-      ...(meta?.season_id && { externalSeasonId: meta.season_id }),
-      watchedAt: new Date(r.date_played).toISOString(),
-      ...(typeof r.playhead === 'number' && { playheadSeconds: Math.max(0, Math.floor(r.playhead)) }),
-      ...(typeof meta?.duration_ms === 'number' && {
-        durationSeconds: Math.max(0, Math.floor(meta.duration_ms / 1000)),
-      }),
-      fullyWatched: Boolean(r.fully_watched),
-      raw: {
-        panel_id: panelId,
-        series_title: meta?.series_title,
-        episode_number: meta?.episode_number,
-        season_number: meta?.season_number,
-      },
-    })
-
-    if (!seriesId) continue
-    if (showsByExt.has(seriesId)) continue // already covered by catalog
-
-    // Catalog fetch failed — stitch together a minimal tree from history.
-    const title = meta?.series_title ?? meta?.season_slug_title ?? panelId
-    const show: IngestShow = showsByExt.get(seriesId) ?? {
-      externalId: seriesId,
-      title,
-      kind: 'anime',
-      seasons: [],
-      ...(firstPoster(r.panel) && { coverUrl: firstPoster(r.panel)! }),
-    }
-    showsByExt.set(seriesId, show)
-
     const seasonNum = meta?.season_number ?? 1
+
     let season = show.seasons.find((s) => s.number === seasonNum)
     if (!season) {
       season = {
@@ -336,7 +398,52 @@ export function buildIngestPayload(
     }
   }
 
-  return { items, shows: Array.from(showsByExt.values()) }
+  return show
+}
+
+/**
+ * Build the ingest payload from watch history plus the full per-series
+ * catalog. Used by the single-shot `/ingest` back-compat path.
+ */
+export function buildIngestPayload(
+  raw: CrunchyrollHistoryItem[],
+  catalogs: Map<string, SeriesCatalog>,
+): IngestBody {
+  const historyBySeries = groupHistoryBySeries(raw)
+  const showsByExt = new Map<string, IngestShow>()
+
+  for (const [seriesId, cat] of catalogs) {
+    const sample = historyBySeries.get(seriesId)?.[0]
+    showsByExt.set(seriesId, buildShowFromCatalog(cat, sample))
+  }
+
+  for (const [seriesId, history] of historyBySeries) {
+    if (showsByExt.has(seriesId)) continue
+    const show = buildShowFromHistoryFallback(seriesId, history)
+    if (show) showsByExt.set(seriesId, show)
+  }
+
+  return { items: buildItemsFromHistory(raw), shows: Array.from(showsByExt.values()) }
+}
+
+/**
+ * Group history rows by `series_id`. Rows without a series_id land in the
+ * `orphans` bucket — they'll be sent in a final chunk with no `shows`.
+ */
+export function groupHistoryBySeries(raw: CrunchyrollHistoryItem[]): Map<string, CrunchyrollHistoryItem[]> {
+  const out = new Map<string, CrunchyrollHistoryItem[]>()
+  for (const r of raw) {
+    const id = r.panel?.episode_metadata?.series_id
+    if (!id) continue
+    const bucket = out.get(id)
+    if (bucket) bucket.push(r)
+    else out.set(id, [r])
+  }
+  return out
+}
+
+export function collectOrphanHistory(raw: CrunchyrollHistoryItem[]): CrunchyrollHistoryItem[] {
+  return raw.filter((r) => !r.panel?.episode_metadata?.series_id)
 }
 
 export function uniqueSeriesIdsFromHistory(raw: CrunchyrollHistoryItem[]): string[] {

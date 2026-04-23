@@ -1,16 +1,22 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, inArray } from 'drizzle-orm'
 import type { Queue } from 'bullmq'
+import type { Redis } from 'ioredis'
 import type { DbClient } from '@kyomiru/db/client'
 import {
   userServices, watchEvents, episodeProviders, episodes,
   shows, showProviders, seasons, userEpisodeProgress,
   userShowState, syncRuns,
 } from '@kyomiru/db/schema'
-import type { Provider, HistoryItem, SeasonTree, ShowTree } from '@kyomiru/providers/types'
-import { decrypt } from '../crypto/secretbox.js'
+import type { HistoryItem, SeasonTree, ShowTree } from '@kyomiru/providers/types'
 import { recomputeUserShowState } from './stateMachine.js'
-import type { EnrichmentJobData } from '../workers/enrichmentWorker.js'
+import { enqueueEnrichment, type EnrichmentJobData } from '../workers/enrichmentWorker.js'
 import { logger } from '../util/logger.js'
+
+const RUN_KEY_TTL_SECONDS = 3600
+
+function runKey(providerKey: string, runId: string, suffix: string): string {
+  return `kyomiru:sync:${providerKey}:${runId}:${suffix}`
+}
 
 const WATCHED_THRESHOLD = 0.9
 
@@ -31,6 +37,12 @@ export async function upsertShowCatalog(
   providerKey: string | null,
   seasonTrees: SeasonTree[],
 ): Promise<void> {
+  if (providerKey) {
+    await db.update(showProviders)
+      .set({ catalogSyncedAt: new Date() })
+      .where(and(eq(showProviders.showId, showId), eq(showProviders.providerKey, providerKey)))
+  }
+
   for (const s of seasonTrees) {
     const [season] = await db.insert(seasons).values({
       showId,
@@ -93,6 +105,7 @@ export type ShowResolver = (externalShowId: string) => Promise<ShowTree | null>
 interface IngestCounters {
   itemsIngested: number
   itemsNew: number
+  itemsSkipped: number
 }
 
 async function processHistoryItem(
@@ -118,10 +131,20 @@ async function processHistoryItem(
   }).onConflictDoNothing()
 
   const episodeId = await resolveEpisode(db, item, providerKey, resolveShow, enrichmentQueue)
-  if (!episodeId) return
+  if (!episodeId) {
+    counters.itemsSkipped++
+    logger.debug(
+      { externalItemId: item.externalItemId, externalShowId: item.externalShowId },
+      'Episode not resolved — watch progress not recorded',
+    )
+    return
+  }
 
   const [ep] = await db.select({ showId: episodes.showId }).from(episodes).where(eq(episodes.id, episodeId))
-  if (!ep) return
+  if (!ep) {
+    counters.itemsSkipped++
+    return
+  }
 
   const watched = isWatched(item.playheadSeconds, item.durationSeconds, item.fullyWatched)
 
@@ -160,12 +183,12 @@ async function processHistoryItem(
   counters.itemsIngested++
 }
 
-async function finalizeSyncRun(
+async function recomputeAndFinalize(
   db: DbClient,
   userId: string,
   providerKey: string,
   runId: string,
-  touchedShowIds: Set<string>,
+  touchedShowIds: Iterable<string>,
   counters: IngestCounters,
 ): Promise<void> {
   for (const showId of touchedShowIds) {
@@ -186,25 +209,7 @@ async function finalizeSyncRun(
     .where(eq(syncRuns.id, runId))
 }
 
-/**
- * Ingest a batch of history items that were collected by an external client
- * (e.g. the Chrome extension). Shows arrive pre-packed — no provider calls.
- */
-export async function ingestItems(
-  db: DbClient,
-  userId: string,
-  providerKey: string,
-  items: HistoryItem[],
-  showTrees: ShowTree[],
-  runId: string,
-  enrichmentQueue: Queue<EnrichmentJobData> | null = null,
-): Promise<IngestCounters> {
-  const showsByExt = new Map(showTrees.map((s) => [s.externalId, s]))
-  const resolveShow: ShowResolver = async (externalShowId) => showsByExt.get(externalShowId) ?? null
-
-  const touchedShowIds = new Set<string>()
-  const counters: IngestCounters = { itemsIngested: 0, itemsNew: 0 }
-
+export async function markUserServiceConnected(db: DbClient, userId: string, providerKey: string): Promise<void> {
   await db.insert(userServices).values({
     userId,
     providerKey,
@@ -219,89 +224,166 @@ export async function ingestItems(
       updatedAt: new Date(),
     },
   })
+}
+
+async function markRunError(db: DbClient, runId: string, counters: IngestCounters, step: string, message: string): Promise<void> {
+  await db.update(syncRuns)
+    .set({
+      status: 'error',
+      finishedAt: new Date(),
+      itemsIngested: counters.itemsIngested,
+      errors: [{ step, message }],
+    })
+    .where(eq(syncRuns.id, runId))
+}
+
+/**
+ * Ingest one chunk of items+shows against an already-running sync run.
+ *
+ * Idempotent and safe to call many times for the same runId. Tracks touched
+ * shows and counter deltas in Redis; the caller must call
+ * `finalizeIngestRun` once the stream has drained to run the final state
+ * recompute and mark the run `success`.
+ */
+export async function ingestChunk(
+  db: DbClient,
+  userId: string,
+  providerKey: string,
+  items: HistoryItem[],
+  showTrees: ShowTree[],
+  runId: string,
+  enrichmentQueue: Queue<EnrichmentJobData> | null,
+  redis: Redis,
+): Promise<IngestCounters> {
+  const showsByExt = new Map(showTrees.map((s) => [s.externalId, s]))
+  const resolveShow: ShowResolver = async (externalShowId) => showsByExt.get(externalShowId) ?? null
+
+  const touchedShowIds = new Set<string>()
+  const counters: IngestCounters = { itemsIngested: 0, itemsNew: 0, itemsSkipped: 0 }
+
+  await markUserServiceConnected(db, userId, providerKey)
 
   try {
     for (const item of items) {
       await processHistoryItem(db, userId, providerKey, item, resolveShow, touchedShowIds, counters, enrichmentQueue)
     }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error({ err, runId }, 'Ingest chunk failed')
+    await markRunError(db, runId, counters, 'chunk', message)
+    throw err
+  }
 
-    await finalizeSyncRun(db, userId, providerKey, runId, touchedShowIds, counters)
+  logger.info(
+    {
+      runId,
+      providerKey,
+      itemsReceived: items.length,
+      showsReceived: showTrees.length,
+      itemsIngested: counters.itemsIngested,
+      itemsSkipped: counters.itemsSkipped,
+      itemsNew: counters.itemsNew,
+    },
+    'Ingest chunk processed',
+  )
+
+  if (touchedShowIds.size > 0 || counters.itemsIngested > 0 || counters.itemsNew > 0) {
+    const touchedKey = runKey(providerKey, runId, 'touched')
+    const ingestedKey = runKey(providerKey, runId, 'ingested')
+    const newKey = runKey(providerKey, runId, 'new')
+
+    const pipeline = redis.multi()
+    if (touchedShowIds.size > 0) pipeline.sadd(touchedKey, ...touchedShowIds)
+    if (counters.itemsIngested > 0) pipeline.incrby(ingestedKey, counters.itemsIngested)
+    if (counters.itemsNew > 0) pipeline.incrby(newKey, counters.itemsNew)
+    pipeline.expire(touchedKey, RUN_KEY_TTL_SECONDS)
+    pipeline.expire(ingestedKey, RUN_KEY_TTL_SECONDS)
+    pipeline.expire(newKey, RUN_KEY_TTL_SECONDS)
+    await pipeline.exec()
+  }
+
+  return counters
+}
+
+/**
+ * Close out a streaming sync run: recompute state for every show touched
+ * across all chunks, update `userServices.lastSyncAt`, mark the run success,
+ * and return the aggregated counters.
+ */
+export async function finalizeIngestRun(
+  db: DbClient,
+  userId: string,
+  providerKey: string,
+  runId: string,
+  redis: Redis,
+): Promise<IngestCounters> {
+  const touchedKey = runKey(providerKey, runId, 'touched')
+  const ingestedKey = runKey(providerKey, runId, 'ingested')
+  const newKey = runKey(providerKey, runId, 'new')
+
+  const [touchedShowIds, ingestedRaw, newRaw] = await Promise.all([
+    redis.smembers(touchedKey),
+    redis.get(ingestedKey),
+    redis.get(newKey),
+  ])
+
+  const counters: IngestCounters = {
+    itemsIngested: ingestedRaw ? Number(ingestedRaw) : 0,
+    itemsNew: newRaw ? Number(newRaw) : 0,
+    itemsSkipped: 0,
+  }
+
+  try {
+    await recomputeAndFinalize(db, userId, providerKey, runId, touchedShowIds, counters)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error({ err, runId }, 'Ingest finalize failed')
+    await markRunError(db, runId, counters, 'finalize', message)
+    throw err
+  }
+
+  await redis.del(touchedKey, ingestedKey, newKey)
+  return counters
+}
+
+/**
+ * Single-shot ingest: start → chunk → finalize in one call. Used by the
+ * back-compat `/ingest` endpoint and tests. Extensions should prefer the
+ * start/chunk/finalize protocol directly.
+ */
+export async function ingestItems(
+  db: DbClient,
+  userId: string,
+  providerKey: string,
+  items: HistoryItem[],
+  showTrees: ShowTree[],
+  runId: string,
+  enrichmentQueue: Queue<EnrichmentJobData> | null = null,
+  redis: Redis | null = null,
+): Promise<IngestCounters> {
+  if (redis) {
+    await ingestChunk(db, userId, providerKey, items, showTrees, runId, enrichmentQueue, redis)
+    return finalizeIngestRun(db, userId, providerKey, runId, redis)
+  }
+
+  const showsByExt = new Map(showTrees.map((s) => [s.externalId, s]))
+  const resolveShow: ShowResolver = async (externalShowId) => showsByExt.get(externalShowId) ?? null
+
+  const touchedShowIds = new Set<string>()
+  const counters: IngestCounters = { itemsIngested: 0, itemsNew: 0, itemsSkipped: 0 }
+
+  await markUserServiceConnected(db, userId, providerKey)
+
+  try {
+    for (const item of items) {
+      await processHistoryItem(db, userId, providerKey, item, resolveShow, touchedShowIds, counters, enrichmentQueue)
+    }
+    await recomputeAndFinalize(db, userId, providerKey, runId, touchedShowIds, counters)
     return counters
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error({ err, runId }, 'Ingest failed')
-
-    await db.update(syncRuns)
-      .set({
-        status: 'error',
-        finishedAt: new Date(),
-        itemsIngested: counters.itemsIngested,
-        errors: [{ step: 'ingest', message }],
-      })
-      .where(eq(syncRuns.id, runId))
-
-    throw err
-  }
-}
-
-export async function runSync(
-  db: DbClient,
-  userId: string,
-  providerKey: string,
-  provider: Provider,
-  secretKey: string,
-  runId: string,
-  enrichmentQueue: Queue<EnrichmentJobData> | null = null,
-): Promise<void> {
-  const [svc] = await db
-    .select()
-    .from(userServices)
-    .where(and(eq(userServices.userId, userId), eq(userServices.providerKey, providerKey)))
-
-  if (!svc?.encryptedSecret || !svc.secretNonce) {
-    throw new Error('No credentials stored')
-  }
-
-  const plaintext = await decrypt(svc.encryptedSecret, svc.secretNonce, secretKey)
-  const { token } = JSON.parse(plaintext) as { token: string }
-
-  const touchedShowIds = new Set<string>()
-  const counters: IngestCounters = { itemsIngested: 0, itemsNew: 0 }
-
-  try {
-    const authToken = await provider.authenticate({ token })
-    const resolveShow: ShowResolver = (externalShowId) => provider.fetchShowMetadata(externalShowId, authToken)
-
-    for await (const page of provider.fetchHistorySince({ token }, svc.lastCursor as Record<string, unknown> | null)) {
-      for (const item of page.items) {
-        await processHistoryItem(db, userId, providerKey, item, resolveShow, touchedShowIds, counters, enrichmentQueue)
-      }
-
-      if (page.nextCursor) {
-        await db.update(userServices)
-          .set({ lastCursor: page.nextCursor })
-          .where(and(eq(userServices.userId, userId), eq(userServices.providerKey, providerKey)))
-      }
-    }
-
-    await finalizeSyncRun(db, userId, providerKey, runId, touchedShowIds, counters)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    logger.error({ err, runId }, 'Sync failed')
-
-    await db.update(syncRuns)
-      .set({
-        status: 'error',
-        finishedAt: new Date(),
-        itemsIngested: counters.itemsIngested,
-        errors: [{ step: 'sync', message }],
-      })
-      .where(eq(syncRuns.id, runId))
-
-    await db.update(userServices)
-      .set({ lastError: message, status: message.includes('401') || message.includes('auth') ? 'error' : 'connected' })
-      .where(and(eq(userServices.userId, userId), eq(userServices.providerKey, providerKey)))
-
+    await markRunError(db, runId, counters, 'ingest', message)
     throw err
   }
 }
@@ -371,11 +453,7 @@ async function resolveEpisode(
       }).onConflictDoNothing()
 
       if (enrichmentQueue) {
-        await enrichmentQueue.add(
-          'enrich',
-          { showId },
-          { jobId: `enrich-${showId}`, removeOnComplete: 100, removeOnFail: 500 },
-        )
+        await enqueueEnrichment(enrichmentQueue, showId)
       }
 
       await upsertShowCatalog(db, showId, providerKey, tree.seasons)
@@ -391,4 +469,80 @@ async function resolveEpisode(
     ))
 
   return resolved?.episodeId ?? null
+}
+
+export interface ResolvedShowCatalog {
+  externalShowId: string
+  known: boolean
+  catalogSyncedAt: Date | null
+  /** seasonNumber → max episode number known to be in episode_providers */
+  seasonCoverage: Record<number, number>
+}
+
+/**
+ * For each external show id, report whether Kyomiru has Crunchyroll catalog
+ * data for it (episode_providers rows) and the per-season episode coverage.
+ * The extension uses this to skip catalog fetches for shows already indexed,
+ * routing them through the fast items-only path instead.
+ */
+export async function resolveShowCatalogStatus(
+  db: DbClient,
+  providerKey: string,
+  externalShowIds: string[],
+): Promise<ResolvedShowCatalog[]> {
+  if (externalShowIds.length === 0) return []
+
+  const spRows = await db
+    .select({
+      externalId: showProviders.externalId,
+      showId: showProviders.showId,
+      catalogSyncedAt: showProviders.catalogSyncedAt,
+    })
+    .from(showProviders)
+    .where(and(
+      eq(showProviders.providerKey, providerKey),
+      inArray(showProviders.externalId, externalShowIds),
+    ))
+
+  const knownByExternalId = new Map(spRows.map((r) => [r.externalId, r]))
+  const knownShowIds = spRows.map((r) => r.showId)
+
+  // showId → { seasonNumber → maxEpisodeNumber }
+  const showCoverageMap = new Map<string, Record<number, number>>()
+
+  if (knownShowIds.length > 0) {
+    const epRows = await db
+      .select({
+        showId: episodes.showId,
+        seasonNumber: seasons.seasonNumber,
+        maxEpisode: sql<number>`MAX(${episodes.episodeNumber})`,
+      })
+      .from(episodeProviders)
+      .innerJoin(episodes, eq(episodeProviders.episodeId, episodes.id))
+      .innerJoin(seasons, eq(episodes.seasonId, seasons.id))
+      .where(and(
+        eq(episodeProviders.providerKey, providerKey),
+        inArray(episodes.showId, knownShowIds),
+      ))
+      .groupBy(episodes.showId, seasons.seasonNumber)
+
+    for (const row of epRows) {
+      const coverage = showCoverageMap.get(row.showId) ?? {}
+      coverage[row.seasonNumber] = Number(row.maxEpisode)
+      showCoverageMap.set(row.showId, coverage)
+    }
+  }
+
+  return externalShowIds.map((externalId) => {
+    const sp = knownByExternalId.get(externalId)
+    if (!sp) {
+      return { externalShowId: externalId, known: false, catalogSyncedAt: null, seasonCoverage: {} }
+    }
+    return {
+      externalShowId: externalId,
+      known: true,
+      catalogSyncedAt: sp.catalogSyncedAt,
+      seasonCoverage: showCoverageMap.get(sp.showId) ?? {},
+    }
+  })
 }

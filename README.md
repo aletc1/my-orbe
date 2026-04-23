@@ -171,6 +171,15 @@ pnpm --filter @kyomiru/api cron:run
 
 Enqueues one sync job per user that has connected credentials. Useful for testing the nightly scheduler locally.
 
+### Backfill scripts
+
+```bash
+pnpm --filter @kyomiru/api backfill:enrichment   # re-enqueue enrichment for shows missing enriched_at
+pnpm --filter @kyomiru/api backfill:state        # recompute user_show_state for every (user, show) pair
+```
+
+Run `backfill:state` after deploying fixes that change status-machine logic or when a catalog has grown but users' statuses are stale (e.g. shows stuck at `watched` despite a newly-aired season existing in `episodes`).
+
 ---
 
 ## Environment variables reference

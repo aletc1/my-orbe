@@ -79,6 +79,7 @@ export const showProviders = pgTable('show_providers', {
   matchSource: matchSourceEnum('match_source').notNull().default('provider_primary'),
   matchConfidence: numeric('match_confidence', { precision: 4, scale: 3 }),
   rawMetadata: jsonb('raw_metadata'),
+  catalogSyncedAt: timestamp('catalog_synced_at', { withTimezone: true }),
 }, (t) => [
   { pk: { columns: [t.showId, t.providerKey, t.externalId] } },
   uniqueIndex('show_providers_external_idx').on(t.providerKey, t.externalId),

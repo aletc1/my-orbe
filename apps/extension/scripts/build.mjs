@@ -10,4 +10,7 @@ for (const file of STATIC_FILES) {
   console.log(`  copy ${file} -> dist/${file}`)
 }
 
+await cp('icons', 'dist/icons', { recursive: true })
+console.log('  copy icons -> dist/icons')
+
 console.log('Extension build complete. Load apps/extension/dist as unpacked.')

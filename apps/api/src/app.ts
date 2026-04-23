@@ -11,7 +11,6 @@ import { errorHandlerPlugin } from './plugins/errorHandler.js'
 import { authRoutes } from './routes/auth.routes.js'
 import { meRoutes } from './routes/me.routes.js'
 import { servicesRoutes } from './routes/services.routes.js'
-import { syncRoutes } from './routes/sync.routes.js'
 import { libraryRoutes } from './routes/library.routes.js'
 import { showsRoutes } from './routes/shows.routes.js'
 import { queueRoutes } from './routes/queue.routes.js'
@@ -66,7 +65,6 @@ export async function buildApp() {
     await api.register(authRoutes)
     await api.register(meRoutes)
     await api.register(servicesRoutes)
-    await api.register(syncRoutes)
     await api.register(libraryRoutes)
     await api.register(showsRoutes)
     await api.register(queueRoutes)

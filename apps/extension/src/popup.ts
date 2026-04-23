@@ -2,10 +2,18 @@ import {
   getConfig,
   setConfig,
   getCapturedJwt,
+  getCheckpoint,
   getLastSync,
+  getSyncState,
+  isCapturedJwtExpired,
+  isCheckpointStale,
   type ExtensionConfig,
+  type SyncState,
+  type CapturedJwt,
 } from './storage.js'
-import { pingKyomiru, runSync, type SyncEvent } from './sync.js'
+import { pingKyomiru } from './sync.js'
+
+const CR_PROVIDER = 'crunchyroll'
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id)
@@ -33,45 +41,93 @@ function appendLog(target: HTMLElement, line: string) {
   target.scrollTop = target.scrollHeight
 }
 
-function setDot(id: string, state: 'ok' | 'err' | 'unknown') {
+function setDot(id: string, state: 'ok' | 'err' | 'warn' | 'unknown') {
   const el = $(id)
-  el.classList.remove('ok', 'err')
+  el.classList.remove('ok', 'err', 'warn')
   if (state === 'ok') el.classList.add('ok')
   else if (state === 'err') el.classList.add('err')
+  else if (state === 'warn') el.classList.add('warn')
+}
+
+function renderJwtStatus(jwt: CapturedJwt | null, hasResumableSync: boolean): { ok: boolean } {
+  const cta = $('cr-cta')
+  const ctaText = $('cr-cta-text')
+  hide(cta)
+
+  if (!jwt) {
+    $('cr-status').textContent = 'Crunchyroll session not captured'
+    setDot('dot-cr', 'err')
+    ctaText.textContent = 'Waiting for your Crunchyroll session. Click below and browse any page — we\u2019ll pick it up automatically.'
+    show(cta)
+    return { ok: false }
+  }
+
+  if (isCapturedJwtExpired(jwt)) {
+    $('cr-status').textContent = 'Crunchyroll session expired'
+    setDot('dot-cr', 'warn')
+    ctaText.textContent = hasResumableSync
+      ? 'Open Crunchyroll and browse any page — your sync will resume automatically.'
+      : 'Session expired. Open Crunchyroll and browse any page to refresh it.'
+    show(cta)
+    return { ok: false }
+  }
+
+  $('cr-status').textContent = `Crunchyroll session captured ${formatRelative(jwt.capturedAt)}`
+  setDot('dot-cr', 'ok')
+  return { ok: true }
+}
+
+function renderSyncState(state: SyncState, opts: { lastSyncLine: string | null; canSync: boolean }) {
+  const log = $('sync-log')
+  const btn = $('sync-btn') as HTMLButtonElement
+
+  const isRunning = state.status === 'running'
+  btn.disabled = isRunning || !opts.canSync
+  btn.textContent = isRunning ? 'Syncing…' : 'Sync now'
+
+  const lines = [...state.log]
+  if (state.status === 'error' && state.error && !state.log.includes(`Error: ${state.error}`)) {
+    lines.push(`Error: ${state.error}`)
+  }
+  if (!isRunning && state.status === 'idle' && opts.lastSyncLine) {
+    lines.push(opts.lastSyncLine)
+  }
+  log.textContent = lines.join('\n')
+  log.scrollTop = log.scrollHeight
 }
 
 async function renderMain() {
   hide($('setup'))
   show($('main'))
 
-  const cfg = await getConfig()
-  const jwt = await getCapturedJwt()
-  const lastSync = await getLastSync()
+  const [cfg, jwt, lastSync, state, checkpoint] = await Promise.all([
+    getConfig(),
+    getCapturedJwt(),
+    getLastSync(),
+    getSyncState(),
+    getCheckpoint(CR_PROVIDER),
+  ])
 
   if (cfg) {
     $('kyomiru-status').textContent = `Kyomiru · ${cfg.userEmail ?? cfg.kyomiruUrl}`
-    setDot('dot-kyomiru', 'ok')
+    setDot('dot-kyomiru', cfg.userEmail ? 'ok' : 'warn')
   } else {
     $('kyomiru-status').textContent = 'Not connected'
     setDot('dot-kyomiru', 'err')
   }
 
-  if (jwt) {
-    $('cr-status').textContent = `Crunchyroll JWT captured ${formatRelative(jwt.capturedAt)}`
-    setDot('dot-cr', 'ok')
-  } else {
-    $('cr-status').textContent = 'Crunchyroll JWT not captured — open crunchyroll.com'
-    setDot('dot-cr', 'err')
-  }
+  const hasResumableSync = !!(checkpoint && !isCheckpointStale(checkpoint))
+  const { ok: jwtOk } = renderJwtStatus(jwt, hasResumableSync)
 
-  const log = $('sync-log')
-  if (lastSync) {
-    if (lastSync.ok) {
-      appendLog(log, `Last sync: ${formatRelative(lastSync.at)} · ${lastSync.itemsIngested} items (${lastSync.itemsNew} new)`)
-    } else {
-      appendLog(log, `Last sync failed: ${lastSync.error ?? 'unknown'}`)
-    }
+  let lastSyncLine: string | null = null
+  if (hasResumableSync && state.status !== 'running') {
+    lastSyncLine = `Sync in progress: ${checkpoint!.seriesDoneIdx}/${checkpoint!.seriesIds.length} shows. Click Sync to resume.`
+  } else if (lastSync) {
+    lastSyncLine = lastSync.ok
+      ? `Last sync: ${formatRelative(lastSync.at)} · ${lastSync.itemsIngested} items (${lastSync.itemsNew} new)`
+      : `Last sync failed: ${lastSync.error ?? 'unknown'}`
   }
+  renderSyncState(state, { lastSyncLine, canSync: !!cfg && jwtOk })
 }
 
 async function renderSetup(prefill?: ExtensionConfig) {
@@ -108,15 +164,24 @@ async function handleSave() {
 
   btn.disabled = true
   log.textContent = ''
-  appendLog(log, 'Requesting host permission…')
 
   try {
     const originPattern = `${url.protocol}//${url.host}/*`
-    const granted = await chrome.permissions.request({ origins: [originPattern] })
-    if (!granted) {
-      appendLog(log, 'Permission denied — cannot reach Kyomiru.')
-      btn.disabled = false
-      return
+    const hasPerm = await chrome.permissions.contains({ origins: [originPattern] })
+
+    // Persist URL/token before the permission prompt — Chrome closes the popup
+    // during `chrome.permissions.request`, so anything after it may never run.
+    // Saving up front lets `init()` finish verification on the next popup open.
+    await setConfig({ kyomiruUrl: rawUrl, token })
+
+    if (!hasPerm) {
+      appendLog(log, 'Requesting host permission…')
+      const granted = await chrome.permissions.request({ origins: [originPattern] })
+      if (!granted) {
+        appendLog(log, 'Permission denied — cannot reach Kyomiru.')
+        btn.disabled = false
+        return
+      }
     }
 
     appendLog(log, 'Verifying token…')
@@ -130,47 +195,36 @@ async function handleSave() {
   }
 }
 
+async function handleOpenCrunchyroll() {
+  // /history is user-scoped and triggers a `/content/v2/<profile_id>/watch-history`
+  // fetch on load — that's the request our background listener uses to capture
+  // both the JWT and the UUID profile id needed for sync.
+  await chrome.tabs.create({ url: 'https://www.crunchyroll.com/history' })
+}
+
+async function verifySavedConfig(cfg: ExtensionConfig) {
+  try {
+    const me = await pingKyomiru(cfg.kyomiruUrl, cfg.token)
+    await setConfig({ kyomiruUrl: cfg.kyomiruUrl, token: cfg.token, userEmail: me.email })
+    await renderMain()
+  } catch {
+    // Leave config unverified; the user can click Settings to retry.
+  }
+}
+
 async function handleSync() {
   const btn = $('sync-btn') as HTMLButtonElement
-  const log = $('sync-log')
-  log.textContent = ''
   btn.disabled = true
 
-  const onEvent = (ev: SyncEvent) => {
-    switch (ev.type) {
-      case 'info':
-        appendLog(log, ev.message)
-        break
-      case 'progress':
-        appendLog(log, `Page ${ev.page} · ${ev.itemsSoFar}${ev.totalKnown ? ` / ${ev.totalKnown}` : ''} items`)
-        break
-      case 'catalog-progress':
-        if (!ev.ok) appendLog(log, `Catalog ${ev.index}/${ev.total} · ${ev.seriesId} failed: ${ev.reason ?? 'unknown'}`)
-        else if (ev.index === ev.total || ev.index % 5 === 0) appendLog(log, `Catalog ${ev.index}/${ev.total}…`)
-        break
-      case 'ingest-start':
-        appendLog(log, `Uploading batch ${ev.batch}/${ev.batches} (${ev.items} items)…`)
-        break
-      case 'ingest-done':
-        appendLog(log, `Batch ${ev.batch} done · ${ev.itemsIngested} ingested (${ev.itemsNew} new)`)
-        break
-      case 'done':
-        appendLog(log, `Sync complete · ${ev.totalIngested} items (${ev.totalNew} new)`)
-        break
-      case 'error':
-        appendLog(log, `Error: ${ev.message}`)
-        break
+  const resp = await chrome.runtime.sendMessage({ type: 'sync/start' }).catch(() => null)
+  if (!resp?.ok) {
+    const log = $('sync-log')
+    if (resp?.reason !== 'already-running') {
+      appendLog(log, 'Could not start sync. Try reopening the popup.')
     }
   }
 
-  try {
-    await runSync(onEvent)
-  } catch {
-    // error already logged via event
-  } finally {
-    btn.disabled = false
-    await renderMain()
-  }
+  await renderMain()
 }
 
 async function handleReconfigure() {
@@ -178,14 +232,37 @@ async function handleReconfigure() {
   await renderSetup(cfg ?? undefined)
 }
 
+function wireStorageListener() {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'session' && area !== 'local') return
+    const relevant =
+      'syncState' in changes ||
+      'capturedJwt' in changes ||
+      'lastSync' in changes ||
+      `syncCheckpoint:${CR_PROVIDER}` in changes
+    if (!relevant) return
+    const main = document.getElementById('main')
+    if (main && !main.classList.contains('hidden')) {
+      void renderMain()
+    }
+  })
+}
+
 async function init() {
   $('save-btn').addEventListener('click', handleSave)
   $('sync-btn').addEventListener('click', handleSync)
   $('reconfigure-btn').addEventListener('click', handleReconfigure)
+  $('open-cr-btn').addEventListener('click', handleOpenCrunchyroll)
+  wireStorageListener()
 
   const cfg = await getConfig()
   if (cfg) {
     await renderMain()
+    if (!cfg.userEmail) {
+      // First save may have been interrupted by the host-permission prompt.
+      // Finish verification now that the popup is open again.
+      void verifySavedConfig(cfg)
+    }
   } else {
     await renderSetup()
   }

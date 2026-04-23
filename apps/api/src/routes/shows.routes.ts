@@ -3,6 +3,7 @@ import { eq, and, inArray, sql } from 'drizzle-orm'
 import { shows, userShowState, seasons, episodes, userEpisodeProgress } from '@kyomiru/db/schema'
 import { PatchShowBodySchema, PatchEpisodeBodySchema } from '@kyomiru/shared/contracts/shows'
 import { recomputeUserShowState } from '../services/stateMachine.js'
+import { enqueueEnrichment } from '../workers/enrichmentWorker.js'
 
 export async function showsRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
@@ -16,11 +17,7 @@ export async function showsRoutes(app: FastifyInstance) {
       if (!show) return reply.status(404).send({ error: 'Show not found' })
 
       if (!show.enrichedAt) {
-        await app.enrichmentQueue.add(
-          'enrich',
-          { showId: id },
-          { jobId: `enrich-${id}`, removeOnComplete: 100, removeOnFail: 500 },
-        )
+        await enqueueEnrichment(app.enrichmentQueue, id)
         req.log.info({ showId: id }, 'Enqueued enrichment from shows.get (unenriched)')
       }
 

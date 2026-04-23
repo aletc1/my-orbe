@@ -1,9 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
-import { Search, LayoutGrid, List, RefreshCw } from 'lucide-react'
+import { Search, LayoutGrid, List } from 'lucide-react'
 import { useState, useCallback } from 'react'
-import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { Q } from '@/lib/queryKeys'
 import { useAppStore } from '@/lib/store'
@@ -32,7 +31,6 @@ function LibraryPage() {
   const { q, status, sort = 'recent_activity' } = Route.useSearch()
   const navigate = useNavigate({ from: '/library' })
   const { viewMode, setViewMode } = useAppStore()
-  const queryClient = useQueryClient()
   const [searchInput, setSearchInput] = useState(q ?? '')
 
   const { data: countData } = useQuery<NewContentCount>({
@@ -53,15 +51,6 @@ function LibraryPage() {
     initialPageParam: undefined,
     getNextPageParam: (last) => last.pageInfo.nextCursor ?? undefined,
     staleTime: 30_000,
-  })
-
-  const sync = useMutation({
-    mutationFn: () => api.post('/sync'),
-    onSuccess: () => {
-      toast.success('Sync started')
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: Q.library({}) }), 3000)
-    },
-    onError: (err) => toast.error(err.message),
   })
 
   const allItems = data?.pages.flatMap((p) => p.items) ?? []
@@ -103,10 +92,6 @@ function LibraryPage() {
             <SelectItem value="updated_date">Updated Date</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" onClick={() => sync.mutate()} disabled={sync.isPending}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${sync.isPending ? 'animate-spin' : ''}`} />
-          Sync
-        </Button>
       </div>
 
       {/* Tabs */}
