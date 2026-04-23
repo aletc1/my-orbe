@@ -3,6 +3,7 @@ import type { ShowListItem } from '@kyomiru/shared/contracts/shows'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { RatingStars } from '@/components/RatingStars'
+import { ProviderLinkButton } from '@/components/ProviderLinkButton'
 
 interface Props {
   show: ShowListItem
@@ -29,6 +30,16 @@ export function ShowCard({ show }: Props) {
           {show.status === 'new_content' && (
             <div className="absolute top-2 left-2">
               <Badge variant="new">NEW</Badge>
+            </div>
+          )}
+          {show.providers.length > 0 && (
+            <div className="absolute top-2 right-2">
+              <ProviderLinkButton
+                providers={show.providers}
+                kind="show"
+                size="icon"
+                className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background"
+              />
             </div>
           )}
         </div>

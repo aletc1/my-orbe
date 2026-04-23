@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { eq, and, desc, asc, ilike, count } from 'drizzle-orm'
 import { shows, userShowState } from '@kyomiru/db/schema'
+import { loadShowProviderLinks } from '../services/providerLinks.js'
 
 export async function libraryRoutes(app: FastifyInstance) {
   app.get<{
@@ -82,13 +83,15 @@ export async function libraryRoutes(app: FastifyInstance) {
       .from(userShowState)
       .where(and(...conditions))
 
+    const providerLinks = await loadShowProviderLinks(app.db, items.map((i) => i.id))
+
     reply.send({
       items: items.map((item) => ({
         ...item,
         latestAirDate: item.latestAirDate?.toString() ?? null,
         favoritedAt: item.favoritedAt?.toISOString() ?? null,
         lastActivityAt: item.lastActivityAt.toISOString(),
-        providerKeys: [],
+        providers: providerLinks.get(item.id) ?? [],
       })),
       pageInfo: {
         nextCursor: hasMore ? items[items.length - 1]?.id ?? null : null,

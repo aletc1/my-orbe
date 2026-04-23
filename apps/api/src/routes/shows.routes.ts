@@ -4,6 +4,7 @@ import { shows, userShowState, seasons, episodes, userEpisodeProgress } from '@k
 import { PatchShowBodySchema, PatchEpisodeBodySchema } from '@kyomiru/shared/contracts/shows'
 import { recomputeUserShowState } from '../services/stateMachine.js'
 import { enqueueEnrichment } from '../workers/enrichmentWorker.js'
+import { loadShowProviderLinks, loadEpisodeProviderLinks } from '../services/providerLinks.js'
 
 export async function showsRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
@@ -32,7 +33,7 @@ export async function showsRoutes(app: FastifyInstance) {
         .where(eq(seasons.showId, id))
         .orderBy(seasons.seasonNumber)
 
-      const seasonDetails = await Promise.all(
+      const seasonsWithEps = await Promise.all(
         allSeasons.map(async (s) => {
           const eps = await app.db
             .select()
@@ -52,31 +53,42 @@ export async function showsRoutes(app: FastifyInstance) {
                   ),
                 )
 
-          const progressMap = new Map(progress.map((p) => [p.episodeId, p]))
-          const watchedCount = progress.filter((p) => p.watched).length
-
-          return {
-            id: s.id,
-            seasonNumber: s.seasonNumber,
-            title: s.title,
-            airDate: s.airDate?.toString() ?? null,
-            episodeCount: eps.length,
-            watchedCount,
-            episodes: eps.map((e) => {
-              const p = progressMap.get(e.id)
-              return {
-                id: e.id,
-                episodeNumber: e.episodeNumber,
-                title: e.title,
-                durationSeconds: e.durationSeconds,
-                airDate: e.airDate?.toString() ?? null,
-                watched: p?.watched ?? false,
-                playheadSeconds: p?.playheadSeconds ?? 0,
-              }
-            }),
-          }
+          return { season: s, eps, progress }
         }),
       )
+
+      const allEpisodeIds = seasonsWithEps.flatMap((row) => row.eps.map((e) => e.id))
+      const [showProviderMap, episodeProviderMap] = await Promise.all([
+        loadShowProviderLinks(app.db, [show.id]),
+        loadEpisodeProviderLinks(app.db, allEpisodeIds),
+      ])
+
+      const seasonDetails = seasonsWithEps.map(({ season: s, eps, progress }) => {
+        const progressMap = new Map(progress.map((p) => [p.episodeId, p]))
+        const watchedCount = progress.filter((p) => p.watched).length
+
+        return {
+          id: s.id,
+          seasonNumber: s.seasonNumber,
+          title: s.title,
+          airDate: s.airDate?.toString() ?? null,
+          episodeCount: eps.length,
+          watchedCount,
+          episodes: eps.map((e) => {
+            const p = progressMap.get(e.id)
+            return {
+              id: e.id,
+              episodeNumber: e.episodeNumber,
+              title: e.title,
+              durationSeconds: e.durationSeconds,
+              airDate: e.airDate?.toString() ?? null,
+              watched: p?.watched ?? false,
+              playheadSeconds: p?.playheadSeconds ?? 0,
+              providers: episodeProviderMap.get(e.id) ?? [],
+            }
+          }),
+        }
+      })
 
       reply.send({
         id: show.id,
@@ -94,7 +106,7 @@ export async function showsRoutes(app: FastifyInstance) {
         totalEpisodes: state?.totalEpisodes ?? 0,
         watchedEpisodes: state?.watchedEpisodes ?? 0,
         lastActivityAt: state?.lastActivityAt?.toISOString() ?? new Date().toISOString(),
-        providerKeys: [],
+        providers: showProviderMap.get(show.id) ?? [],
         seasons: seasonDetails,
       })
     },

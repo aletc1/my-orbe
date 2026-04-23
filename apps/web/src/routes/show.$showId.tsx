@@ -11,6 +11,7 @@ import { RatingStars } from '@/components/RatingStars'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { ProviderLinkButton } from '@/components/ProviderLinkButton'
 
 export const Route = createFileRoute('/show/$showId')({
   component: ShowDetailPage,
@@ -100,6 +101,7 @@ function ShowDetailPage() {
             >
               {isFavorited ? <><HeartOff className="h-4 w-4 mr-1.5" />Remove from Queue</> : <><Heart className="h-4 w-4 mr-1.5" />Add to Queue</>}
             </Button>
+            <ProviderLinkButton providers={show.providers} kind="show" size="sm" showLabel />
             {isRemoved ? (
               <Button variant="outline" size="sm" onClick={() => patch.mutate({ status: 'restore' })} disabled={patch.isPending}>
                 <RotateCcw className="h-4 w-4 mr-1.5" /> Restore
@@ -177,6 +179,12 @@ function ShowDetailPage() {
                           {Math.floor(ep.durationSeconds / 60)}m
                         </span>
                       )}
+                      <ProviderLinkButton
+                        providers={ep.providers.length > 0 ? ep.providers : show.providers}
+                        kind="episode"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                      />
                     </div>
                   ))}
                 </div>

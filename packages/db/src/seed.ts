@@ -1,22 +1,50 @@
 import './loadEnv.js'
 import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
+import { sql } from 'drizzle-orm'
 import { providers } from './schema.js'
 
 async function main() {
   const url = process.env['DATABASE_URL']
   if (!url) throw new Error('DATABASE_URL is required')
-  const sql = postgres(url, { max: 1 })
-  const db = drizzle(sql)
+  const client = postgres(url, { max: 1 })
+  const db = drizzle(client)
 
   await db.insert(providers).values([
-    { key: 'netflix', displayName: 'Netflix', enabled: false, kind: 'general' },
-    { key: 'prime', displayName: 'Prime Video', enabled: false, kind: 'general' },
-    { key: 'crunchyroll', displayName: 'Crunchyroll', enabled: true, kind: 'anime' },
-  ]).onConflictDoNothing()
+    {
+      key: 'netflix',
+      displayName: 'Netflix',
+      enabled: false,
+      kind: 'general',
+      showUrlTemplate: 'https://www.netflix.com/title/{externalId}',
+    },
+    {
+      key: 'prime',
+      displayName: 'Prime Video',
+      enabled: false,
+      kind: 'general',
+      showUrlTemplate: 'https://www.amazon.com/gp/video/detail/{externalId}',
+    },
+    {
+      key: 'crunchyroll',
+      displayName: 'Crunchyroll',
+      enabled: true,
+      kind: 'anime',
+      showUrlTemplate: 'https://www.crunchyroll.com/series/{externalId}',
+      episodeUrlTemplate: 'https://www.crunchyroll.com/watch/{externalId}',
+    },
+  ]).onConflictDoUpdate({
+    target: providers.key,
+    set: {
+      displayName: sql`EXCLUDED.display_name`,
+      kind: sql`EXCLUDED.kind`,
+      showUrlTemplate: sql`EXCLUDED.show_url_template`,
+      episodeUrlTemplate: sql`EXCLUDED.episode_url_template`,
+    },
+  })
 
   console.log('Seed complete')
-  await sql.end()
+  await client.end()
 }
 
 main().catch((err) => {
