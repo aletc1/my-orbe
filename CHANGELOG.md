@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.4.1...kyomiru-v1.4.2) (2026-04-24)
+
+
+### Bug Fixes
+
+* **infra:** decouple landing image from chart release and fix shared build ([#33](https://github.com/aletc1/kyomiru/issues/33)) ([ef67d7f](https://github.com/aletc1/kyomiru/commit/ef67d7f65c81fd9ce7cb0b5736aa358bd6c2f4ce))
+
 ## [1.4.1](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.4.0...kyomiru-v1.4.1) (2026-04-24)
 
 
