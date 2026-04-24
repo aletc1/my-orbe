@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.4.0...kyomiru-v1.4.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* **infra:** include @kyomiru/shared in landing Dockerfile deps stage ([#31](https://github.com/aletc1/kyomiru/issues/31)) ([68effdc](https://github.com/aletc1/kyomiru/commit/68effdca38167e9bb1295168b88bf56fee446e32))
+
 ## [1.4.0](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.3.0...kyomiru-v1.4.0) (2026-04-24)
 
 
