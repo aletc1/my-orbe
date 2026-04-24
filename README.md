@@ -29,6 +29,62 @@ pnpm db:migrate && pnpm db:seed  # create tables and seed provider registry
 pnpm dev                         # api on :3000, web on :5173
 ```
 
+## Self-hosting
+
+Kyomiru ships prebuilt multi-arch (amd64 + arm64) images to `quay.io/kyomiru`. A `docker-compose.yml` in the repo root spins everything up.
+
+### 5-minute setup
+
+```bash
+git clone https://github.com/<your-fork>/kyomiru
+cd kyomiru
+cp .env.self-host.example .env
+# Edit .env — at minimum set APP_SECRET_KEY, SESSION_SECRET, and either
+# MOCK_GOOGLE_AUTH_USER (quick) or Google OAuth credentials (proper auth).
+docker compose up -d
+open http://localhost:8080
+```
+
+### Required environment variables
+
+| Variable | What it is | How to generate |
+|---|---|---|
+| `APP_SECRET_KEY` | 32-byte base64 key for encrypting provider credentials at rest (AES-256-GCM) | `openssl rand -base64 32` |
+| `SESSION_SECRET` | Signs the session cookie | `openssl rand -base64 32` |
+| `MOCK_GOOGLE_AUTH_USER` **or** `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `OIDC_REDIRECT_URL` | Authentication — pick one mode | See below |
+
+### Auth modes
+
+- **Zero-config (LAN / homelab)** — uncomment `MOCK_GOOGLE_AUTH_USER=you@example.com` in `.env`. Visiting `/api/auth/google` instantly creates a session for that email with no Google Cloud project required. Do not expose this instance to the public internet while this is set.
+- **Proper Google OAuth** — create an OAuth 2.0 Client in [Google Cloud Console](https://console.cloud.google.com), add your origin to *Authorised JavaScript origins* and `<origin>/api/auth/callback` to *Authorised redirect URIs*, then fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `OIDC_REDIRECT_URL`.
+
+### Optional variables
+
+| Variable | Purpose |
+|---|---|
+| `TMDB_API_KEY` | TMDb metadata enrichment for non-anime shows — [get one free](https://www.themoviedb.org/settings/api) |
+| `KYOMIRU_VERSION` | Pin a release tag (e.g. `0.2.1`). Defaults to `latest` |
+| `KYOMIRU_PORT` | Host port for the web container. Defaults to `8080` |
+| `SENTRY_DSN` | Error reporting |
+
+### Configuring Quay.io secrets (for maintainers publishing images)
+
+1. In [quay.io](https://quay.io), create a **robot account** under the `kyomiru` org with *Write* permission on `kyomiru/api`, `kyomiru/web`, and `kyomiru/migrate`.
+2. Copy the robot name (e.g. `kyomiru+github_actions`) and its Docker CLI token.
+3. In GitHub → *Settings → Secrets and variables → Actions*, add two repository secrets:
+   - `QUAY_USERNAME` = the robot name
+   - `QUAY_PASSWORD` = the Docker CLI token
+
+The `release.yml` workflow reads these automatically on every release.
+
+### Connect the Chrome extension
+
+Download `kyomiru-extension-vX.Y.Z.zip` from the [latest GitHub Release](../../releases/latest), unzip it, then in Chrome go to `chrome://extensions` → enable *Developer Mode* → *Load unpacked* → select the unzipped folder. In the popup, enter your Kyomiru URL (e.g. `http://localhost:8080`) and an extension token generated at `<your-kyomiru>/settings/extension`.
+
+### Running behind a reverse proxy (HTTPS)
+
+Point Caddy / Traefik / nginx at `web:80` of the compose stack. Update `WEB_ORIGIN`, `API_ORIGIN`, and `OIDC_REDIRECT_URL` in `.env` to your public HTTPS origin.
+
 ## Chrome extension
 
 Watch history is imported via the Kyomiru Chrome extension, which captures your in-browser session for supported providers (Crunchyroll and Netflix) and POSTs normalised history to your Kyomiru instance. See [apps/extension/README.md](./apps/extension/README.md).
