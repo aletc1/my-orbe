@@ -1,5 +1,10 @@
 # Kyomiru
 
+[![CI](https://github.com/aletc1/kyomiru/actions/workflows/ci.yml/badge.svg)](https://github.com/aletc1/kyomiru/actions/workflows/ci.yml)
+[![Release](https://github.com/aletc1/kyomiru/actions/workflows/release.yml/badge.svg)](https://github.com/aletc1/kyomiru/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/aletc1/kyomiru?sort=semver)](https://github.com/aletc1/kyomiru/releases/latest)
+[![License: AGPL v3](https://img.shields.io/github/license/aletc1/kyomiru)](./LICENSE)
+
 Kyomiru (kyō + miru, "today I watch") is a self-hostable PWA for tracking your anime and TV show watch history. It acts as a memory layer — surfacing shows you already finished that suddenly have new episodes out.
 
 ## Features

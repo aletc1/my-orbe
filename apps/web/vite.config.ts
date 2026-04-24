@@ -26,6 +26,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        navigateFallbackDenylist: [/^\/api(\/|$)/],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*\.(jpg|jpeg|png|webp|avif)$/,

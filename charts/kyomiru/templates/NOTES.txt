@@ -28,7 +28,7 @@ Verify that migrations and the API are healthy:
 
 Check API health:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kyomiru.fullname" . }}-api 3000:3000
-  curl http://localhost:3000/healthz
+  curl http://localhost:3000/api/healthz
 
 Run an ad-hoc enrichment backfill:
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- node dist/backfillEnrichment.js
