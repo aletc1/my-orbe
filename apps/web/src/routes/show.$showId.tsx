@@ -181,7 +181,7 @@ function ShowDetailPage() {
                       )}
                       <ProviderLinkButton
                         providers={ep.providers.length > 0 ? ep.providers : show.providers}
-                        kind="episode"
+                        kind={ep.providers.length > 0 ? 'episode' : 'show'}
                         size="icon"
                         className="h-7 w-7 shrink-0"
                       />
