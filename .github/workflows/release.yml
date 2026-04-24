@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.r.outputs.release_created }}
+      tag_name: ${{ steps.r.outputs.tag_name }}
+      version: ${{ steps.r.outputs.version }}
+      major: ${{ steps.r.outputs.major }}
+      minor: ${{ steps.r.outputs.minor }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: r
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-images:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            dockerfile: infra/docker/api.Dockerfile
+          - image: web
+            dockerfile: infra/docker/web.Dockerfile
+          - image: migrate
+            dockerfile: infra/docker/migrate.Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: quay.io/kyomiru/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ needs.release-please.outputs.version }}
+            type=raw,value=${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}
+            type=raw,value=${{ needs.release-please.outputs.major }}
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  build-extension:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @kyomiru/shared build
+      - run: pnpm --filter @kyomiru/extension build
+      - name: Verify extension built
+        run: test -f apps/extension/dist/manifest.json && test -f apps/extension/dist/background.js
+      - name: Zip extension dist
+        run: |
+          cd apps/extension/dist
+          zip -r "../../../kyomiru-extension-${{ needs.release-please.outputs.tag_name }}.zip" .
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            "kyomiru-extension-${{ needs.release-please.outputs.tag_name }}.zip" \
+            --clobber

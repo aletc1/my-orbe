@@ -10,7 +10,13 @@ pnpm lint        # ESLint
 pnpm test        # Vitest unit tests
 ```
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages (`feat:`, `fix:`, `chore:`, etc.).
+**PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/)** — this repo uses squash-merge, so the PR title becomes the commit on `main` and drives automated versioning via release-please.
+
+```
+<type>[optional scope][!]: <short description>
+```
+
+Quick reference: `feat:` → minor bump, `fix:` → patch bump, `feat!:` / `fix!:` → major bump (breaking change). `chore:`, `refactor:`, `docs:`, `ci:`, `test:` produce no release. See [CLAUDE.md §Release process](./CLAUDE.md#release-process) for the full table and rules.
 
 ## Adding a streaming provider
 

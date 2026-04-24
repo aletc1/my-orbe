@@ -7,6 +7,31 @@ on:
     branches: [main]
 
 jobs:
+  lint-pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title follows Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! echo "$TITLE" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?(!)?: .+'; then
+            echo "ERROR: PR title does not match Conventional Commits format."
+            echo ""
+            echo "  Got: $TITLE"
+            echo ""
+            echo "  Format: <type>[optional scope][!]: <description>"
+            echo "  Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+            echo "  Examples:"
+            echo "    feat(web): add dark mode toggle"
+            echo "    fix(api): prevent double-enqueue on retry"
+            echo "    chore(deps): bump zod to 3.24"
+            echo ""
+            echo "  See CLAUDE.md §Release process for the full semver mapping."
+            exit 1
+          fi
+          echo "OK: '$TITLE'"
+
   ci:
     runs-on: ubuntu-latest
     steps:

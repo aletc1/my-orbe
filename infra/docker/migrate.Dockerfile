@@ -4,33 +4,31 @@ RUN npm install -g pnpm@10
 FROM base AS deps
 WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+# pnpm --frozen-lockfile validates the lockfile against every workspace package,
+# so all package.json files in the workspace must exist even if we only build @kyomiru/db.
 COPY packages/config/package.json ./packages/config/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
 COPY packages/providers/package.json ./packages/providers/
 COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+COPY apps/extension/package.json ./apps/extension/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/config/node_modules ./packages/config/node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
-COPY --from=deps /app/packages/providers/node_modules ./packages/providers/node_modules
-COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
-COPY . .
-RUN pnpm --filter @kyomiru/shared build
+COPY packages/config ./packages/config
+COPY packages/db ./packages/db
 RUN pnpm --filter @kyomiru/db build
-RUN pnpm --filter @kyomiru/providers build
-RUN pnpm --filter @kyomiru/api build
+# SQL files must live alongside compiled JS so __dirname-relative paths resolve
+RUN cp -r packages/db/src/migrations packages/db/dist/migrations
 
 FROM node:20-slim AS runtime
-RUN npm install -g pnpm@10
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=build /app/apps/api/dist ./dist
-COPY --from=build /app/apps/api/package.json ./
+COPY --from=build /app/packages/db/dist ./packages/db/dist
+COPY --from=build /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=build /app/node_modules ./node_modules
-EXPOSE 3000
-CMD ["node", "dist/server.js"]
+CMD ["node", "packages/db/dist/migrate.js"]

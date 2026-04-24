@@ -109,3 +109,46 @@ All variables documented in `.env.example`. Required: `DATABASE_URL`, `REDIS_URL
 - Unit tests: Vitest (`*.test.ts` alongside source in `apps/api`, `apps/web`, `apps/extension`).
 - E2E: Playwright in `apps/web/e2e/`.
 - No database mocking — api integration tests hit a real Postgres instance.
+
+## Release process
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please). Config: `release-please-config.json`. Workflow: `.github/workflows/release.yml`.
+
+### How a release happens
+
+1. Every push to `main` re-runs release-please, which scans commits since the last release tag.
+2. If at least one commit is user-visible (`feat`, `fix`, or anything with `!`), release-please opens or updates a single **Release PR** titled `chore(main): release X.Y.Z`. This PR bumps `package.json` and `apps/extension/manifest.json`, regenerates `CHANGELOG.md`, and waits.
+3. Merging the Release PR creates the `vX.Y.Z` git tag and a GitHub Release, which triggers:
+   - Multi-arch (amd64 + arm64) image builds pushed to `quay.io/kyomiru/{api,web,migrate}` with tags `:X.Y.Z`, `:X.Y`, `:X`, `:latest`, `:sha-<short>`.
+   - `kyomiru-extension-vX.Y.Z.zip` attached to the release as a download artifact.
+4. PRs that only touch `chore:` / `refactor:` / `docs:` / `ci:` / `test:` do not produce a release.
+
+### Commit / PR title conventions
+
+This repo uses **squash-merge** — the PR title becomes the commit on `main` and is what release-please parses. Every PR title must match [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>[optional scope][!]: <short description>
+```
+
+| Prefix | Example | Version bump | When to use |
+|---|---|---|---|
+| `feat:` | `feat(web): add drag-and-drop queue reorder` | **minor** (0.2.0 → 0.3.0) | New user-visible feature |
+| `fix:` | `fix(api): stop double-enqueuing enrichment` | **patch** (0.2.0 → 0.2.1) | Bug fix |
+| `perf:` | `perf(sync): batch progress upserts` | **patch** | Performance improvement |
+| `feat!:` / `fix!:` | `feat(api)!: replace /library with /v2/library` | **major** (0.2.0 → 1.0.0) | Breaking change |
+| `revert:` | `revert: feat(web): drag-and-drop queue` | matches reverted | Reverts a previous commit |
+| `docs:` / `chore:` / `refactor:` / `test:` / `build:` / `ci:` / `style:` | `chore(deps): bump zod to 3.24` | **none** | No user-visible change |
+
+Additional rules:
+- Breaking changes (`!`) **must** include a `BREAKING CHANGE:` paragraph in the PR body describing what breaks and how to migrate. release-please pastes this into the changelog.
+- Scope is optional but recommended when the change is localised. Valid scopes mirror the workspace: `api`, `web`, `extension`, `db`, `shared`, `providers`, `infra`, `deps`.
+- Title format: imperative mood, lowercase after the colon, no trailing period, ≤ 72 chars.
+- When a PR contains multiple logically separate changes, prefer splitting it into two PRs. If that is impractical, pick the highest-severity type for the title.
+
+### What Claude should do when creating a PR
+
+- Classify the change before writing the title: is this a new capability a self-hoster would notice (`feat`), a bug that was observable (`fix`), or purely internal (`chore` / `refactor`)?
+- Any change to an env var name, a migration, a public API contract (routes, request/response shapes in `packages/shared`), or the extension ingest protocol is a **breaking change** — use `!` and write a `BREAKING CHANGE:` block.
+- When uncertain between `feat` and `chore`, ask: "would a self-hoster want this in their upgrade notes?" If yes → `feat`. If no → `chore`.
+- Never open or edit a Release PR — release-please owns it. Fix the source commits on `main` if the Release PR shows the wrong version.
