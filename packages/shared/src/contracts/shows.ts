@@ -52,6 +52,7 @@ export const ShowListItemSchema = z.object({
 
 export const ShowDetailSchema = ShowListItemSchema.extend({
   description: z.string().nullable(),
+  kindOverride: ShowKindSchema.nullable(),
   seasons: z.array(SeasonDetailSchema),
 })
 
@@ -59,6 +60,7 @@ export const PatchShowBodySchema = z.object({
   rating: z.number().int().min(1).max(5).nullable().optional(),
   status: z.enum(['removed', 'restore']).optional(),
   favorited: z.boolean().optional(),
+  kindOverride: ShowKindSchema.nullable().optional(),
 }).strict()
 
 export const PatchEpisodeBodySchema = z.object({

@@ -13,6 +13,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { ProviderLinkButton } from '@/components/ProviderLinkButton'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+
+const KIND_LABELS: Record<string, string> = { anime: 'Anime', tv: 'TV', movie: 'Movie' }
+const KIND_OPTIONS = ['anime', 'tv', 'movie'] as const
 
 export const Route = createFileRoute('/show/$showId')({
   component: ShowDetailPage,
@@ -75,7 +81,31 @@ function ShowDetailPage() {
         {/* Meta */}
         <div className="flex-1 min-w-0 space-y-3">
           <div className="flex flex-wrap gap-2 items-center">
-            <Badge variant="secondary">{show.kind}</Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="secondary" size="sm" className="h-6 px-2 text-xs font-medium rounded-full">
+                  {KIND_LABELS[show.kind] ?? show.kind}
+                  {show.kindOverride && <span className="ml-1 opacity-60">*</span>}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {KIND_OPTIONS.map((k) => (
+                  <DropdownMenuItem
+                    key={k}
+                    onClick={() => patch.mutate({ kindOverride: k === show.kind && !show.kindOverride ? null : k })}
+                    className={show.kind === k ? 'font-medium' : ''}
+                  >
+                    {KIND_LABELS[k]}
+                    {show.kind === k && !show.kindOverride && ' (auto)'}
+                  </DropdownMenuItem>
+                ))}
+                {show.kindOverride && (
+                  <DropdownMenuItem onClick={() => patch.mutate({ kindOverride: null })}>
+                    Reset to auto
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
             {show.year && <span className="text-sm text-muted-foreground">{show.year}</span>}
             {show.status === 'new_content' && <Badge variant="new">NEW</Badge>}
           </div>
