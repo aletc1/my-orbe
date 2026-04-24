@@ -9,13 +9,13 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "cron:run": "NODE_OPTIONS='--conditions=development' tsx src/cron.ts",
-    "backfill:enrichment": "NODE_OPTIONS='--conditions=development' tsx src/backfillEnrichment.ts",
-    "backfill:state": "NODE_OPTIONS='--conditions=development' tsx src/backfillShowState.ts",
-    "backfill:translations": "NODE_OPTIONS='--conditions=development' tsx src/backfillTranslations.ts",
-    "approved:add": "NODE_OPTIONS='--conditions=development' tsx src/approved.ts add",
-    "approved:remove": "NODE_OPTIONS='--conditions=development' tsx src/approved.ts remove",
-    "approved:list": "NODE_OPTIONS='--conditions=development' tsx src/approved.ts list"
+    "cron:run": "node dist/cron.js",
+    "backfill:enrichment": "node dist/backfillEnrichment.js",
+    "backfill:state": "node dist/backfillShowState.js",
+    "backfill:translations": "node dist/backfillTranslations.js",
+    "approved:add": "node dist/approved.js add",
+    "approved:remove": "node dist/approved.js remove",
+    "approved:list": "node dist/approved.js list"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.1",

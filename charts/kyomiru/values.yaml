@@ -58,6 +58,17 @@ app:
   # DEV / HOMELAB ONLY — bypass Google OIDC and sign in instantly as this email.
   # Do NOT set on an instance exposed to the public internet.
   mockGoogleAuthUser: ""
+  # Invite-only access control.
+  # When true, only emails in the approved_emails table (or matching
+  # autoSignupEmailPattern) may sign in. Manage entries with:
+  #   kubectl -n <ns> exec deploy/<release>-api -- npm run approved:add -- you@example.com
+  disableAutoSignup: false
+  # Glob pattern auto-approving emails without an explicit approved_emails row.
+  # e.g. "*@company.com". Only active when disableAutoSignup=true.
+  autoSignupEmailPattern: ""
+  # Comma-separated locales for TMDb/AniList enrichment.
+  # Leave blank to use the default set (en-US,ja-JP,es-ES,fr-FR).
+  enrichmentLocales: ""
 
 # Reference an externally created Secret instead of the chart-managed one.
 # The Secret must contain the keys listed in charts/kyomiru/README.md.
