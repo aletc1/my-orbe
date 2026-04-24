@@ -43,12 +43,20 @@ export async function libraryRoutes(app: FastifyInstance) {
         AND ep.show_id = ${shows.id}
     )`
 
+    // TODO(perf): title_asc, latest_air_date, rating, last_watched are
+    // unindexed today — the planner runs a sort-in-memory after the
+    // (user_id)-filtered join. Fine for realistic libraries; if this ever
+    // gets slow, either add single-column indexes on the shows columns or
+    // denormalise `effective_rating` onto user_show_state.
     const orderMap = {
       recent_activity: desc(userShowState.lastActivityAt),
       title_asc: asc(shows.canonicalTitle),
-      rating: desc(userShowState.rating),
+      // Fall back to TMDB/AniList rating (0-10 → /2) when the user hasn't rated,
+      // so unrated shows still get an ordering position.
+      rating: sql`COALESCE(${userShowState.rating}, ROUND(${shows.rating} / 2)) DESC NULLS LAST`,
       last_watched: sql`${lastWatchedSql} DESC NULLS LAST`,
       latest_air_date: desc(shows.latestAirDate),
+      queue_position: sql`${userShowState.queuePosition} ASC NULLS LAST`,
     }
 
     const orderBy = orderMap[sort as keyof typeof orderMap] ?? desc(userShowState.lastActivityAt)
@@ -65,6 +73,7 @@ export async function libraryRoutes(app: FastifyInstance) {
       latestAirDate: shows.latestAirDate,
       status: userShowState.status,
       rating: userShowState.rating,
+      communityRating: shows.rating,
       favoritedAt: userShowState.favoritedAt,
       queuePosition: userShowState.queuePosition,
       totalEpisodes: userShowState.totalEpisodes,
@@ -97,6 +106,8 @@ export async function libraryRoutes(app: FastifyInstance) {
         canonicalTitle: pickLocalized(item.titles as Record<string, string>, locales, item.canonicalTitle),
         // Expose the effective kind (override wins in UI; both needed for controls).
         kind: item.kindOverride ?? item.kind,
+        // Drizzle returns Postgres numeric as a string — coerce for the JSON contract.
+        communityRating: item.communityRating !== null ? Number(item.communityRating) : null,
         latestAirDate: item.latestAirDate?.toString() ?? null,
         favoritedAt: item.favoritedAt?.toISOString() ?? null,
         lastActivityAt: item.lastActivityAt.toISOString(),

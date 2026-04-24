@@ -21,8 +21,9 @@ import {
 import { Copy, Trash2, Plus } from 'lucide-react'
 import { useExtensionTokens } from '@/hooks/useExtensionTokens'
 
+const AUTO_LOCALE = 'auto'
 const LOCALE_OPTIONS = [
-  { value: '', label: 'Auto (browser language)' },
+  { value: AUTO_LOCALE, label: 'Auto (browser language)' },
   { value: 'en-US', label: 'English' },
   { value: 'ja-JP', label: 'Japanese (日本語)' },
   { value: 'es-ES', label: 'Spanish (Español)' },
@@ -82,8 +83,8 @@ function LanguageCard({ user }: { user: User }) {
         </p>
         <Label htmlFor="locale-select">Preferred language</Label>
         <Select
-          value={user.preferredLocale ?? ''}
-          onValueChange={(v) => setLocale.mutate(v || null)}
+          value={user.preferredLocale ?? AUTO_LOCALE}
+          onValueChange={(v) => setLocale.mutate(v === AUTO_LOCALE ? null : v)}
           disabled={setLocale.isPending}
         >
           <SelectTrigger id="locale-select" className="w-64">

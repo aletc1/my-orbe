@@ -60,6 +60,7 @@ function ShowDetailPage() {
 
   const isFavorited = !!show.favoritedAt
   const isRemoved = show.status === 'removed'
+  const isWatched = show.status === 'watched'
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -118,20 +119,29 @@ function ShowDetailPage() {
           {show.latestAirDate && (
             <p className="text-sm text-muted-foreground">Latest episode: {show.latestAirDate}</p>
           )}
-          <RatingStars
-            value={show.rating}
-            onChange={(r) => patch.mutate({ rating: r })}
-          />
+          <div className="flex items-center gap-3">
+            <RatingStars
+              value={show.rating}
+              onChange={(r) => patch.mutate({ rating: r })}
+            />
+            {show.communityRating !== null && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                TMDB {show.communityRating.toFixed(1)}
+              </span>
+            )}
+          </div>
           {/* Actions */}
           <div className="flex flex-wrap gap-2 pt-1">
-            <Button
-              variant={isFavorited ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => patch.mutate({ favorited: !isFavorited })}
-              disabled={patch.isPending || isRemoved}
-            >
-              {isFavorited ? <><HeartOff className="h-4 w-4 mr-1.5" />Remove from Queue</> : <><Heart className="h-4 w-4 mr-1.5" />Add to Queue</>}
-            </Button>
+            {!isWatched && (
+              <Button
+                variant={isFavorited ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => patch.mutate({ favorited: !isFavorited })}
+                disabled={patch.isPending || isRemoved}
+              >
+                {isFavorited ? <><HeartOff className="h-4 w-4 mr-1.5" />Remove from Queue</> : <><Heart className="h-4 w-4 mr-1.5" />Add to Queue</>}
+              </Button>
+            )}
             <ProviderLinkButton providers={show.providers} kind="show" size="sm" showLabel />
             {isRemoved ? (
               <Button variant="outline" size="sm" onClick={() => patch.mutate({ status: 'restore' })} disabled={patch.isPending}>

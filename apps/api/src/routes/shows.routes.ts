@@ -116,6 +116,7 @@ export async function showsRoutes(app: FastifyInstance) {
         latestAirDate: show.latestAirDate?.toString() ?? null,
         status: state?.status ?? null,
         rating: state?.rating ?? null,
+        communityRating: show.rating !== null ? Number(show.rating) : null,
         favoritedAt: state?.favoritedAt?.toISOString() ?? null,
         queuePosition: state?.queuePosition ?? null,
         totalEpisodes: state?.totalEpisodes ?? 0,
