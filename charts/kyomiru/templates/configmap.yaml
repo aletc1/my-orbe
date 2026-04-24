@@ -11,6 +11,13 @@ data:
   API_ORIGIN: {{ include "kyomiru.apiOrigin" . | quote }}
   OIDC_REDIRECT_URL: {{ include "kyomiru.oidcRedirectUrl" . | quote }}
   PROVIDERS_FIXTURE: {{ .Values.app.providersFixture | quote }}
+  DISABLE_AUTO_SIGNUP: {{ .Values.app.disableAutoSignup | quote }}
+  {{- if .Values.app.autoSignupEmailPattern }}
+  AUTO_SIGNUP_EMAIL_PATTERN: {{ .Values.app.autoSignupEmailPattern | quote }}
+  {{- end }}
+  {{- if .Values.app.enrichmentLocales }}
+  ENRICHMENT_LOCALES: {{ .Values.app.enrichmentLocales | quote }}
+  {{- end }}
   {{- if .Values.app.mockGoogleAuthUser }}
   MOCK_GOOGLE_AUTH_USER: {{ .Values.app.mockGoogleAuthUser | quote }}
   {{- end }}

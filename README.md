@@ -69,12 +69,27 @@ See [`.env.self-host.example`](./.env.self-host.example) for every self-host var
 - **Zero-config (LAN / homelab)** — uncomment `MOCK_GOOGLE_AUTH_USER=you@example.com` in `.env`. Visiting `/api/auth/google` instantly creates a session for that email with no Google Cloud project required. Do not expose this instance to the public internet while this is set.
 - **Proper Google OAuth** — create an OAuth 2.0 Client in [Google Cloud Console](https://console.cloud.google.com), add your origin to *Authorised JavaScript origins* and `<origin>/api/auth/callback` to *Authorised redirect URIs*, then fill in `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `OIDC_REDIRECT_URL`.
 
+### Access control
+
+By default anyone who authenticates via Google gets access. To restrict sign-in to a pre-approved list:
+
+1. Set `DISABLE_AUTO_SIGNUP=true` in your `.env`.
+2. Add approved emails before or after startup:
+   ```bash
+   docker compose exec api npm run approved:add -- you@example.com
+   docker compose exec api npm run approved:list
+   docker compose exec api npm run approved:remove -- old@example.com
+   ```
+3. Optionally auto-approve a whole domain without individual entries: `AUTO_SIGNUP_EMAIL_PATTERN=*@company.com`.
+
 ### Optional variables
 
 | Variable | Purpose |
 |---|---|
 | `TMDB_API_KEY` | TMDb metadata enrichment for non-anime shows — [get one free](https://www.themoviedb.org/settings/api) |
 | `ENRICHMENT_LOCALES` | Comma-separated locales fetched from TMDb during enrichment. Defaults to `en-US,ja-JP,es-ES,fr-FR` |
+| `DISABLE_AUTO_SIGNUP` | When `true`, only pre-approved emails may sign in. Default: `false` (anyone who authenticates via Google gets access) |
+| `AUTO_SIGNUP_EMAIL_PATTERN` | Glob pattern auto-approving emails without an explicit table entry (e.g. `*@company.com`). Only active when `DISABLE_AUTO_SIGNUP=true` |
 | `KYOMIRU_VERSION` | Pin a release tag (e.g. `0.2.1`). Defaults to `latest` |
 | `KYOMIRU_PORT` | Host port for the web container. Defaults to `8080` |
 | `SENTRY_DSN` | Error reporting |

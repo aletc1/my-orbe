@@ -162,7 +162,7 @@ ingress:
     secretName: kyomiru-tls           # cert-manager will create this
 ```
 
-The chart adds `cert-manager.io/cluster-issuer: letsencrypt-prod` to the Ingress annotations automatically.
+The chart creates a standalone `Certificate` resource pointing at the `ClusterIssuer`. The `Certificate` is placed in `.Release.Namespace` by default. When `ingress.className` is `istio`, it is placed in `istio-system` instead (where the Istio gateway reads TLS secrets from).
 
 ### Manual certificate
 
@@ -229,17 +229,51 @@ kubectl -n kyomiru create job --from=cronjob/kyomiru-cron-enrichment kyomiru-enr
 kubectl -n kyomiru logs -l app.kubernetes.io/component=cron-enrichment --follow
 ```
 
+## Access Control (invite-only)
+
+By default anyone who can authenticate via Google gets access. To restrict sign-in to a pre-approved list:
+
+```yaml
+app:
+  disableAutoSignup: true
+  # Optional — auto-approve a whole domain without individual entries:
+  autoSignupEmailPattern: "*@company.com"
+```
+
+Then manage approved emails against the live API pod:
+
+```bash
+# Add an email
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run approved:add -- you@example.com
+
+# Add with a note
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run approved:add -- you@example.com "beta tester"
+
+# List all approved emails
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run approved:list
+
+# Remove an email
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run approved:remove -- you@example.com
+```
+
+Approval results are cached in Redis for 5 minutes (`auth:approved:<email>`). Removing an entry takes effect within that window without a restart.
+
 ## Running Backfills
 
 One-off scripts that re-process existing data. Run them against the live API pod (no extra Job needed):
 
 ```bash
 # Re-enqueue enrichment for ALL shows (not just unenriched ones):
-kubectl -n kyomiru exec deploy/kyomiru-api -- node dist/backfillEnrichment.js
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run backfill:enrichment
 
 # Recompute user_show_state for all (user, show) pairs:
-kubectl -n kyomiru exec deploy/kyomiru-api -- node dist/backfillShowState.js
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run backfill:state
+
+# Reset enrichedAt to re-fetch multi-locale titles from TMDb/AniList:
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run backfill:translations
 ```
+
+Run `backfill:translations` after adding new locales to `app.enrichmentLocales`.
 
 ## Upgrading
 
