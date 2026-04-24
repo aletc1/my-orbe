@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Activity, Sparkles, CheckCheck, Settings, Plug, ChevronLeft, ChevronRight } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Q } from '@/lib/queryKeys'
@@ -10,13 +11,8 @@ import { Logo } from './Logo'
 import { cn } from '@/lib/utils'
 import type { NewContentCount } from '@kyomiru/shared/contracts/auth'
 
-const NAV = [
-  { label: 'In Progress', to: '/library?status=in_progress', icon: Activity },
-  { label: 'New Content', to: '/library?status=new_content', icon: Sparkles, badge: true },
-  { label: 'Watched', to: '/library?status=watched', icon: CheckCheck },
-]
-
 export function Sidebar() {
+  const { t } = useTranslation()
   const { sidebarOpen, setSidebarOpen } = useAppStore()
   const { data: countData } = useQuery<NewContentCount>({
     queryKey: Q.newContentCount,
@@ -25,6 +21,12 @@ export function Sidebar() {
   })
 
   const newCount = countData?.count ?? 0
+
+  const NAV = [
+    { labelKey: 'nav_in_progress', to: '/library?status=in_progress', icon: Activity },
+    { labelKey: 'nav_new_content', to: '/library?status=new_content', icon: Sparkles, badge: true },
+    { labelKey: 'nav_watched', to: '/library?status=watched', icon: CheckCheck },
+  ]
 
   return (
     <aside
@@ -42,7 +44,7 @@ export function Sidebar() {
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
           className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
-          aria-label="Toggle sidebar"
+          aria-label={t('toggle_sidebar')}
         >
           {sidebarOpen ? <ChevronLeft className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
         </button>
@@ -50,8 +52,8 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-4 space-y-1 px-2">
-        {sidebarOpen && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2">Discover</p>}
-        {NAV.map(({ label, to, icon: Icon, badge }) => (
+        {sidebarOpen && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2">{t('discover')}</p>}
+        {NAV.map(({ labelKey, to, icon: Icon, badge }) => (
           <Link
             key={to}
             to={to as '/library'}
@@ -60,7 +62,7 @@ export function Sidebar() {
             <Icon className="h-4 w-4 shrink-0" />
             {sidebarOpen && (
               <>
-                <span className="flex-1">{label}</span>
+                <span className="flex-1">{t(labelKey)}</span>
                 {badge && newCount > 0 && <Badge className="h-5 px-1.5 text-xs">{newCount}</Badge>}
               </>
             )}
@@ -70,15 +72,15 @@ export function Sidebar() {
         {sidebarOpen && (
           <>
             <div className="pt-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2">Watch Queue</p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2">{t('watch_queue')}</p>
               <WatchQueue />
             </div>
             <div className="pt-4 border-t">
               <Link to="/services" className="flex items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-sidebar-accent text-sidebar-foreground">
-                <Plug className="h-4 w-4 shrink-0" /> Services
+                <Plug className="h-4 w-4 shrink-0" /> {t('services')}
               </Link>
               <Link to="/settings" className="flex items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-sidebar-accent text-sidebar-foreground">
-                <Settings className="h-4 w-4 shrink-0" /> Settings
+                <Settings className="h-4 w-4 shrink-0" /> {t('settings')}
               </Link>
             </div>
           </>
