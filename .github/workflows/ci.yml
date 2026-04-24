@@ -111,7 +111,15 @@ jobs:
           helm template kyomiru charts/kyomiru \
             --set host=test.local \
             --set app.mockGoogleAuthUser=test@example.com \
-            > /dev/null
+            > /tmp/rendered.yaml
+      - name: Assert API probes hit /api/healthz
+        run: |
+          count=$(grep -c 'path: /api/healthz' /tmp/rendered.yaml || true)
+          if [ "$count" -lt 2 ]; then
+            echo "Expected liveness+readiness probes at /api/healthz, found $count" >&2
+            grep -n 'path:' /tmp/rendered.yaml >&2 || true
+            exit 1
+          fi
       - name: Render external DB/Redis path
         run: |
           helm template kyomiru charts/kyomiru \

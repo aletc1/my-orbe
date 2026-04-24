@@ -301,7 +301,7 @@ Check the API health endpoint:
 
 ```bash
 kubectl -n kyomiru port-forward svc/kyomiru-api 3000:3000
-curl http://localhost:3000/healthz
+curl http://localhost:3000/api/healthz
 # {"ok":true,"db":true,"redis":true}
 ```
 
