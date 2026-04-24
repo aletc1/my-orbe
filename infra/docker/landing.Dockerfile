@@ -5,6 +5,7 @@ FROM base AS deps
 WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/config/package.json ./packages/config/
+COPY packages/shared/package.json ./packages/shared/
 COPY apps/landing/package.json ./apps/landing/
 RUN pnpm install --frozen-lockfile
 
@@ -12,6 +13,7 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/landing/node_modules ./apps/landing/node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 RUN pnpm --filter @kyomiru/landing build
 
