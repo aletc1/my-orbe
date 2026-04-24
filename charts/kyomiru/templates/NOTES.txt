@@ -30,10 +30,14 @@ Check API health:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kyomiru.fullname" . }}-api 3000:3000
   curl http://localhost:3000/api/healthz
 
-Run an ad-hoc enrichment backfill:
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- node dist/backfillEnrichment.js
+Run enrichment / backfill scripts against the live API pod:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run backfill:enrichment
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run backfill:state
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run backfill:translations
 
-Run a show-state backfill:
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- node dist/backfillShowState.js
+Manage invite-only access (requires DISABLE_AUTO_SIGNUP=true):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run approved:add -- you@example.com
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run approved:list
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "kyomiru.fullname" . }}-api -- npm run approved:remove -- you@example.com
 
-Full documentation: https://github.com/kyomiru/kyomiru/blob/main/charts/kyomiru/README.md
+Full documentation: https://github.com/aletc1/kyomiru/blob/main/charts/kyomiru/README.md

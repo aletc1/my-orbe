@@ -102,13 +102,41 @@ docker exec -it $(docker ps -qf name=postgres) psql -U kyomiru kyomiru
 
 ### Backfill scripts
 
+These scripts target the compiled `dist/` output — run `pnpm -F @kyomiru/api build` once before invoking them locally.
+
 ```bash
-pnpm --filter @kyomiru/api cron:run              # enqueue pending enrichment jobs manually
-pnpm --filter @kyomiru/api backfill:enrichment   # re-enqueue enrichment for shows missing enriched_at
-pnpm --filter @kyomiru/api backfill:state        # recompute user_show_state for every (user, show) pair
+pnpm --filter @kyomiru/api cron:run               # enqueue pending enrichment jobs manually
+pnpm --filter @kyomiru/api backfill:enrichment    # re-enqueue enrichment for ALL shows
+pnpm --filter @kyomiru/api backfill:state         # recompute user_show_state for every (user, show) pair
+pnpm --filter @kyomiru/api backfill:translations  # reset enrichedAt to re-fetch multi-locale titles
 ```
 
 Run `backfill:state` after deploying changes to the status-machine logic or when shows are stuck at `watched` despite a newly-aired season existing in the `episodes` table.
+Run `backfill:translations` after adding new locales to `ENRICHMENT_LOCALES`.
+
+### Access control (invite-only)
+
+```bash
+pnpm --filter @kyomiru/api approved:add -- user@example.com "optional note"
+pnpm --filter @kyomiru/api approved:list
+pnpm --filter @kyomiru/api approved:remove -- user@example.com
+```
+
+Only relevant when `DISABLE_AUTO_SIGNUP=true`.
+
+### Running one-shot scripts in Docker / Kubernetes
+
+The production API image ships compiled JS at `dist/` — `pnpm` is absent and `tsx` is stripped (devDependency). Use `npm run <script>` instead:
+
+```bash
+# Compose
+docker compose exec api npm run approved:add -- you@example.com
+docker compose exec api npm run backfill:translations
+
+# Kubernetes
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run approved:add -- you@example.com
+kubectl -n kyomiru exec deploy/kyomiru-api -- npm run backfill:enrichment
+```
 
 ## Environment variables
 
@@ -126,6 +154,9 @@ All variables live in `apps/api/.env` (or your deployment platform's env). Use `
 | `WEB_ORIGIN` | Yes | Frontend origin, e.g. `http://localhost:5173` |
 | `API_ORIGIN` | Yes | API origin, e.g. `http://localhost:3000` |
 | `TMDB_API_KEY` | No | TMDb API key for non-anime metadata enrichment |
+| `ENRICHMENT_LOCALES` | No | Comma-separated locales for TMDb enrichment. Default: `en-US,ja-JP,es-ES,fr-FR` |
+| `DISABLE_AUTO_SIGNUP` | No | When `true`, only emails in `approved_emails` (or matching `AUTO_SIGNUP_EMAIL_PATTERN`) may sign in. Default: `false` |
+| `AUTO_SIGNUP_EMAIL_PATTERN` | No | Glob pattern for auto-approving emails (e.g. `*@company.com`). Only active when `DISABLE_AUTO_SIGNUP=true` |
 | `MOCK_GOOGLE_AUTH_USER` | No | **Dev only.** Hitting `/api/auth/google` immediately creates a session for this email, bypassing OIDC. Leave empty in production. |
 | `SENTRY_DSN` | No | Sentry DSN for error tracking |
 | `PROVIDERS_FIXTURE` | No | Reserved for fixture-driven provider testing |
@@ -140,9 +171,10 @@ Two scopes — global catalog data is shared across all users; only watch histor
 - `providers` — provider registry (crunchyroll, netflix, prime)
 - `shows` — canonical show entities enriched from AniList/TMDb
 - `show_providers`, `seasons`, `episodes`, `episode_providers` — catalog hierarchy
+- `approved_emails` — invite-only access control list (only consulted when `DISABLE_AUTO_SIGNUP=true`)
 
 **User-scoped**
-- `users` — Google OIDC accounts
+- `users` — Google OIDC accounts; `preferred_locale` stores the user's preferred display language
 - `extension_tokens` — long-lived Bearer tokens for the Chrome extension (sha256-hashed at rest, capped at 5 active tokens per user, revocable, `last_used_at` tracked)
 - `user_services` — encrypted provider credentials + sync state
 - `watch_events` — raw history imported from providers

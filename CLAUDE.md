@@ -27,11 +27,14 @@ pnpm format           # Prettier formatting
 pnpm -F @kyomiru/api test
 pnpm -F @kyomiru/web typecheck
 
-# One-shot API scripts (not scheduled in-repo)
+# One-shot API scripts (require pnpm build first; target compiled dist/)
 pnpm -F @kyomiru/api cron:run                  # Enqueue enrichment for shows with no enrichedAt
 pnpm -F @kyomiru/api backfill:enrichment       # Re-enqueue enrichment for all shows
 pnpm -F @kyomiru/api backfill:state            # Recompute user_show_state for all users
 pnpm -F @kyomiru/api backfill:translations     # Reset enrichedAt for all shows to re-fetch multi-locale titles
+pnpm -F @kyomiru/api approved:add <email> [note]   # Add email to the approved_emails table
+pnpm -F @kyomiru/api approved:remove <email>       # Remove email from approved_emails table
+pnpm -F @kyomiru/api approved:list                 # List all approved emails
 ```
 
 The Docker Compose file lives at `infra/compose/docker-compose.dev.yml`.
@@ -69,7 +72,7 @@ This is a **pnpm + Turborepo monorepo** with three apps and four packages.
 ### Packages
 
 - **`packages/shared`** — Zod contracts (`auth`, `ingest`, `library`, `services`, `shows`, `sync`) shared by api/web/extension. Single source of truth for request/response shapes.
-- **`packages/db`** — Drizzle ORM schema + raw SQL migrations. Global tables: `providers`, `shows` (has JSONB `titles`, `descriptions` locale maps; `search_tsv` tsvector covering all locales), `show_providers`, `seasons` (JSONB `titles`), `episodes` (JSONB `titles`, `descriptions`), `episode_providers`. User-scoped: `users` (has `preferred_locale`), `user_services`, `watch_events`, `user_episode_progress`, `user_show_state` (carries `prev_status`, `queue_position`, `rating`, `kind_override`), `sync_runs`, `content_hashes`, `extension_tokens`. Exports `@kyomiru/db/client` and `@kyomiru/db/schema`.
+- **`packages/db`** — Drizzle ORM schema + raw SQL migrations. Global tables: `providers`, `shows` (has JSONB `titles`, `descriptions` locale maps; `search_tsv` tsvector covering all locales), `show_providers`, `seasons` (JSONB `titles`), `episodes` (JSONB `titles`, `descriptions`), `episode_providers`, `approved_emails` (invite-only access control list). User-scoped: `users` (has `preferred_locale`), `user_services`, `watch_events`, `user_episode_progress`, `user_show_state` (carries `prev_status`, `queue_position`, `rating`, `kind_override`), `sync_runs`, `content_hashes`, `extension_tokens`. Exports `@kyomiru/db/client` and `@kyomiru/db/schema`.
 - **`packages/providers`** — **Enrichment** provider abstraction only: AniList (`AniListMatch` has `canonicalTitle` + `titles: Record<string,string>` for en/ja/ja-Latn), TMDb (`TMDbMatch` has `originalLanguage`, `originCountry`; `fetchTMDbShowTree` accepts `locales[]` and uses `append_to_response=translations` for a single-round-trip locale map). Watch-history extraction lives in the extension, not here.
 - **`packages/config`** — Shared TypeScript `tsconfig` presets.
 
@@ -101,11 +104,12 @@ This is a **pnpm + Turborepo monorepo** with three apps and four packages.
 - **Session auth** (web): Google OIDC via `openid-client`; session in an encrypted cookie (`@fastify/secure-session`). Route guard: `app.requireAuth`.
 - **Extension auth**: Bearer token in the `extension_tokens` table (sha256-hashed at rest, cap 5 active per user, revocable, `last_used_at` tracked). Route guard: `app.requireExtensionAuth`.
 - **Dev bypass**: setting `MOCK_GOOGLE_AUTH_USER=<email>` short-circuits OIDC and drops a session for that user.
+- **Invite-only gate**: `DISABLE_AUTO_SIGNUP=true` restricts sign-in to the `approved_emails` table. `AUTO_SIGNUP_EMAIL_PATTERN` (glob, e.g. `*@company.com`) auto-approves matching emails without a table row. `isEmailApproved` (`src/services/authGate.ts`) is called by `requireAuth`, `requireExtensionAuth`, and the OIDC `signInAs` callback; result cached in Redis at `auth:approved:<email>` (5-min TTL). Manage entries with the `approved:{add,remove,list}` scripts.
 - CORS is origin-allowlisted (`WEB_ORIGIN` + `chrome-extension://*`); rate limit is 60 req/min. **No CSRF middleware is currently registered** — the `@fastify/csrf-protection` dep is present but unused; the session cookie is `SameSite=Lax`.
 
 ### Environment
 
-All variables documented in `.env.example`. Required: `DATABASE_URL`, `REDIS_URL`, `APP_SECRET_KEY`, `SESSION_SECRET`, `WEB_ORIGIN`, `API_ORIGIN`, plus Google OIDC creds (unless `MOCK_GOOGLE_AUTH_USER` is set). Optional: `TMDB_API_KEY`, `ENRICHMENT_LOCALES` (comma-separated, default `en-US,ja-JP,es-ES,fr-FR`), `SENTRY_DSN`, `PROVIDERS_FIXTURE`. Validation is done by Zod in `src/plugins/env.ts`; `src/plugins/config.ts` is the Fastify wrapper that decorates `app.config`.
+All variables documented in `.env.example`. Required: `DATABASE_URL`, `REDIS_URL`, `APP_SECRET_KEY`, `SESSION_SECRET`, `WEB_ORIGIN`, `API_ORIGIN`, plus Google OIDC creds (unless `MOCK_GOOGLE_AUTH_USER` is set). Optional: `TMDB_API_KEY`, `ENRICHMENT_LOCALES` (comma-separated, default `en-US,ja-JP,es-ES,fr-FR`), `DISABLE_AUTO_SIGNUP` (default `false`), `AUTO_SIGNUP_EMAIL_PATTERN` (glob, only active when `DISABLE_AUTO_SIGNUP=true`), `SENTRY_DSN`, `PROVIDERS_FIXTURE`. Validation is done by Zod in `src/plugins/env.ts`; `src/plugins/config.ts` is the Fastify wrapper that decorates `app.config`.
 
 ### Testing
 
