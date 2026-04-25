@@ -138,8 +138,12 @@ function LibraryPage() {
     ? facetProviders
     : [...facetProviders, { key: provider, displayName: provider }]
 
+  // When `q` is set, the API ignores `sort` and orders by relevance, so don't
+  // show the user's stale sort choice as an "active filter" or render the
+  // dropdown that pretends to control it.
+  const sortActive = !q && sort !== DEFAULT_LIBRARY_SORT
   const activeCount =
-    (sort !== DEFAULT_LIBRARY_SORT ? 1 : 0) +
+    (sortActive ? 1 : 0) +
     (kind !== undefined ? 1 : 0) +
     (provider !== undefined ? 1 : 0)
 
@@ -190,18 +194,24 @@ function LibraryPage() {
         </div>
         {/* Filters — own row on mobile (toggle), transparent (inline siblings) on sm+ */}
         <div className={cn('sm:contents', filtersOpen ? 'flex flex-wrap gap-3' : 'hidden')}>
-          <Select value={sort} onValueChange={handleSortChange}>
-            <SelectTrigger className="w-full sm:w-48">
-              <SelectValue placeholder={t('sort_by')} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="recent_activity">{t('sort_recent_activity')}</SelectItem>
-              <SelectItem value="title_asc">{t('sort_title_asc')}</SelectItem>
-              <SelectItem value="rating">{t('sort_rating')}</SelectItem>
-              <SelectItem value="last_watched">{t('sort_last_watched')}</SelectItem>
-              <SelectItem value="latest_air_date">{t('sort_latest_air_date')}</SelectItem>
-            </SelectContent>
-          </Select>
+          {q ? (
+            <div className="w-full sm:w-48 px-3 py-2 text-sm text-muted-foreground border rounded-md bg-muted/50">
+              {t('sort_relevance')}
+            </div>
+          ) : (
+            <Select value={sort} onValueChange={handleSortChange}>
+              <SelectTrigger className="w-full sm:w-48">
+                <SelectValue placeholder={t('sort_by')} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="recent_activity">{t('sort_recent_activity')}</SelectItem>
+                <SelectItem value="title_asc">{t('sort_title_asc')}</SelectItem>
+                <SelectItem value="rating">{t('sort_rating')}</SelectItem>
+                <SelectItem value="last_watched">{t('sort_last_watched')}</SelectItem>
+                <SelectItem value="latest_air_date">{t('sort_latest_air_date')}</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
           {showKindFilter && (
             <Select value={kind ?? 'all'} onValueChange={handleKindChange}>
               <SelectTrigger className="w-full sm:w-44">

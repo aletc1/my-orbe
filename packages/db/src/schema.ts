@@ -77,6 +77,7 @@ export const shows = pgTable('shows', {
   titles: jsonb('titles').$type<Record<string, string>>().notNull().default(sql`'{}'::jsonb`),
   descriptions: jsonb('descriptions').$type<Record<string, string>>().notNull().default(sql`'{}'::jsonb`),
   searchTsv: tsvector('search_tsv'),
+  searchNormalized: text('search_normalized').notNull().default(''),
 })
 
 // ─── Global: show <> provider mapping ────────────────────────────────────────
