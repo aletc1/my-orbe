@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.8.0...kyomiru-v1.9.0) (2026-04-25)
+
+
+### Features
+
+* mark whole show or season as viewed ([#69](https://github.com/aletc1/kyomiru/issues/69)) ([cb3d5fc](https://github.com/aletc1/kyomiru/commit/cb3d5fc4dc81cd35ee90ccac05875b8d3a11de52))
+* **web:** filter library by genre ([#68](https://github.com/aletc1/kyomiru/issues/68)) ([47d7aa5](https://github.com/aletc1/kyomiru/commit/47d7aa5bb76dfa1fb4546cd7615fa80b517ce6f7))
+
+
+### Bug Fixes
+
+* **web:** iOS viewport overflow and lost search on back navigation ([#66](https://github.com/aletc1/kyomiru/issues/66)) ([092445a](https://github.com/aletc1/kyomiru/commit/092445a96437df1c25672c86e6ea928df7feab9f))
+
 ## [1.8.0](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.7.1...kyomiru-v1.8.0) (2026-04-25)
 
 
