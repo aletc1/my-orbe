@@ -1,4 +1,5 @@
 import type { SeasonTree } from '../types.js'
+import { fetchWithTimeout } from '../util/fetchWithTimeout.js'
 
 const TMDB_BASE = 'https://api.themoviedb.org/3'
 
@@ -77,7 +78,7 @@ export async function searchTMDb(title: string, apiKey: string, year?: number): 
   try {
     const params = new URLSearchParams({ api_key: apiKey, query: title })
     if (year) params.set('first_air_date_year', String(year))
-    const resp = await fetch(`${TMDB_BASE}/search/tv?${params}`)
+    const resp = await fetchWithTimeout(`${TMDB_BASE}/search/tv?${params}`)
     if (!resp.ok) return null
     const json = await resp.json() as { results?: TMDbSearchResult[] }
     const result = json.results?.[0]
@@ -129,7 +130,7 @@ export async function fetchTMDbShowTree(
   if (!apiKey) return null
   try {
     const primaryLocale = locales[0] ?? 'en-US'
-    const detailResp = await fetch(
+    const detailResp = await fetchWithTimeout(
       `${TMDB_BASE}/tv/${tmdbId}?api_key=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(primaryLocale)}&append_to_response=translations`,
     )
     if (!detailResp.ok) return null
@@ -156,7 +157,7 @@ export async function fetchTMDbShowTree(
 
     for (const s of realSeasons) {
       // Fetch the primary-locale season for structure (episode list, runtime, air dates).
-      const primarySeasonResp = await fetch(
+      const primarySeasonResp = await fetchWithTimeout(
         `${TMDB_BASE}/tv/${tmdbId}/season/${s.season_number}?api_key=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(primaryLocale)}`,
       )
       if (!primarySeasonResp.ok) continue
@@ -175,7 +176,7 @@ export async function fetchTMDbShowTree(
       const additionalLocales = locales.slice(1)
       for (const locale of additionalLocales) {
         const langKey = locale.split('-')[0] ?? locale
-        const localeResp = await fetch(
+        const localeResp = await fetchWithTimeout(
           `${TMDB_BASE}/tv/${tmdbId}/season/${s.season_number}?api_key=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(locale)}`,
         )
         if (!localeResp.ok) continue
