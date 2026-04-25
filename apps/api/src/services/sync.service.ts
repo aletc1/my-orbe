@@ -439,8 +439,18 @@ async function markRunError(db: DbClient, runId: string, counters: IngestCounter
  * recover items when a provider exposes different IDs in watch history vs
  * catalog endpoints (e.g. Crunchyroll panel IDs vs CMS episode IDs).
  *
- * When an episode is found, the stale catalog ID in episode_providers is replaced
- * with the working external ID so subsequent fast-path syncs resolve directly.
+ * Two-stage:
+ *   1. Look up an existing episode at (showId, season_number, episode_number).
+ *   2. If none exists, ADOPT the item's raw metadata into the catalog —
+ *      upsert the season + episode and seed episode_providers with the panel
+ *      ID. This keeps ingest self-healing when the catalog is corrupt, stale,
+ *      or simply numbered differently than the provider's watch-history feed
+ *      (e.g. Crunchyroll's web app numbers DAN DA DAN seasons 2/3 while the
+ *      CMS catalog returns 1/2). Without this, every sync after a corrupted
+ *      catalog upsert silently drops the user's history.
+ *
+ * In both cases, the item's external ID is written to episode_providers so
+ * subsequent fast-path syncs resolve directly without revisiting this function.
  */
 async function resolveItemsByMetadata(
   db: DbClient,
@@ -456,8 +466,14 @@ async function resolveItemsByMetadata(
     const showId = showIdByExtId.get(item.externalShowId)
     if (!showId) continue
     const raw = item.raw as Record<string, unknown> | null | undefined
-    const seasonNumber = typeof raw?.season_number === 'number' ? Math.floor(raw.season_number) : undefined
-    const episodeNumber = typeof raw?.episode_number === 'number' ? Math.floor(raw.episode_number) : undefined
+    // Providers vary in casing: Crunchyroll uses snake_case (season_number),
+    // Netflix uses camelCase (seasonNumber). Accept either.
+    const rawSeason = typeof raw?.season_number === 'number' ? raw.season_number
+      : typeof raw?.seasonNumber === 'number' ? raw.seasonNumber : undefined
+    const rawEpisode = typeof raw?.episode_number === 'number' ? raw.episode_number
+      : typeof raw?.episodeNumber === 'number' ? raw.episodeNumber : undefined
+    const seasonNumber = rawSeason !== undefined ? Math.floor(rawSeason) : undefined
+    const episodeNumber = rawEpisode !== undefined ? Math.floor(rawEpisode) : undefined
     if (seasonNumber === undefined || episodeNumber === undefined) continue
     candidates.push({ item, showId, seasonNumber, episodeNumber })
   }
@@ -479,13 +495,97 @@ async function resolveItemsByMetadata(
     const seasonIdByNumber = new Map(seasonRows.map((s) => [s.seasonNumber, s.id]))
 
     const seasonIds = [...seasonIdByNumber.values()]
-    if (seasonIds.length === 0) continue
-
-    const epRows = await db
-      .select({ id: episodes.id, seasonId: episodes.seasonId, episodeNumber: episodes.episodeNumber })
-      .from(episodes)
-      .where(inArray(episodes.seasonId, seasonIds))
+    const epRows = seasonIds.length > 0
+      ? await db
+        .select({ id: episodes.id, seasonId: episodes.seasonId, episodeNumber: episodes.episodeNumber })
+        .from(episodes)
+        .where(inArray(episodes.seasonId, seasonIds))
+      : []
     const episodeIdByKey = new Map(epRows.map((e) => [`${e.seasonId}:${e.episodeNumber}`, e.id]))
+
+    // ── Adopt-on-miss: create any missing seasons/episodes from raw metadata ──
+    // For candidates whose (season_number, episode_number) isn't present in the
+    // catalog, materialise them now. This is the inverse of upsertShowCatalog's
+    // "I have a catalog, write it" flow: here, the user's watch history is the
+    // only signal we have, and we treat it as authoritative for the episodes
+    // it touches. Enrichment (TMDb/AniList) will later layer titles, air dates,
+    // and translations on top via the existing ON CONFLICT DO UPDATE merges.
+    const missingCandidates = showCandidates.filter((c) => {
+      const sId = seasonIdByNumber.get(c.seasonNumber)
+      return !sId || !episodeIdByKey.has(`${sId}:${c.episodeNumber}`)
+    })
+    if (missingCandidates.length > 0) {
+      const missingSeasonNumbers = [...new Set(
+        missingCandidates.filter((c) => !seasonIdByNumber.has(c.seasonNumber)).map((c) => c.seasonNumber)
+      )]
+      if (missingSeasonNumbers.length > 0) {
+        const seasonInserts = missingSeasonNumbers.map((n) => {
+          const sample = missingCandidates.find((c) => c.seasonNumber === n)!.item.raw as Record<string, unknown> | null | undefined
+          const seasonTitle = typeof sample?.season_title === 'string' ? sample.season_title
+            : typeof sample?.seasonDescriptor === 'string' ? sample.seasonDescriptor : null
+          return {
+            showId,
+            seasonNumber: n,
+            title: seasonTitle,
+            episodeCount: 0,
+            titles: (seasonTitle ? { en: seasonTitle } : {}) as Record<string, string>,
+          }
+        })
+        const insertedSeasonRows = await db.insert(seasons)
+          .values(seasonInserts)
+          .onConflictDoNothing({ target: [seasons.showId, seasons.seasonNumber] })
+          .returning({ id: seasons.id, seasonNumber: seasons.seasonNumber })
+        for (const r of insertedSeasonRows) seasonIdByNumber.set(r.seasonNumber, r.id)
+        const stillMissing = missingSeasonNumbers.filter((n) => !seasonIdByNumber.has(n))
+        if (stillMissing.length > 0) {
+          const refetched = await db
+            .select({ id: seasons.id, seasonNumber: seasons.seasonNumber })
+            .from(seasons)
+            .where(and(eq(seasons.showId, showId), inArray(seasons.seasonNumber, stillMissing)))
+          for (const r of refetched) seasonIdByNumber.set(r.seasonNumber, r.id)
+        }
+      }
+
+      const episodeInsertsByKey = new Map<string, typeof episodes.$inferInsert>()
+      for (const c of missingCandidates) {
+        const seasonId = seasonIdByNumber.get(c.seasonNumber)
+        if (!seasonId) continue
+        const key = `${seasonId}:${c.episodeNumber}`
+        if (episodeIdByKey.has(key) || episodeInsertsByKey.has(key)) continue
+        const raw = c.item.raw as Record<string, unknown> | null | undefined
+        const epTitle = typeof raw?.title === 'string' ? raw.title
+          : typeof raw?.episodeTitle === 'string' ? raw.episodeTitle : null
+        const epAirDate = typeof raw?.episode_air_date === 'string' ? raw.episode_air_date.slice(0, 10) : null
+        episodeInsertsByKey.set(key, {
+          seasonId,
+          showId,
+          episodeNumber: c.episodeNumber,
+          title: epTitle,
+          titles: (epTitle ? { en: epTitle } : {}) as Record<string, string>,
+          descriptions: {} as Record<string, string>,
+          airDate: epAirDate,
+        })
+      }
+      const epValues = [...episodeInsertsByKey.values()]
+      for (let i = 0; i < epValues.length; i += INSERT_BATCH) {
+        const rows = await db.insert(episodes)
+          .values(epValues.slice(i, i + INSERT_BATCH))
+          .onConflictDoNothing({ target: [episodes.seasonId, episodes.episodeNumber] })
+          .returning({ id: episodes.id, seasonId: episodes.seasonId, episodeNumber: episodes.episodeNumber })
+        for (const r of rows) episodeIdByKey.set(`${r.seasonId}:${r.episodeNumber}`, r.id)
+      }
+      // Re-fetch keys that lost the race (concurrent insert): same (seasonId,
+      // episodeNumber) hit ON CONFLICT DO NOTHING so the row isn't returned.
+      const stillMissingKeys = [...episodeInsertsByKey.keys()].filter((k) => !episodeIdByKey.has(k))
+      if (stillMissingKeys.length > 0) {
+        const seasonIdsToFetch = [...new Set(stillMissingKeys.map((k) => k.split(':')[0]!))]
+        const refetched = await db
+          .select({ id: episodes.id, seasonId: episodes.seasonId, episodeNumber: episodes.episodeNumber })
+          .from(episodes)
+          .where(inArray(episodes.seasonId, seasonIdsToFetch))
+        for (const r of refetched) episodeIdByKey.set(`${r.seasonId}:${r.episodeNumber}`, r.id)
+      }
+    }
 
     // Dedupe by episodeId: if multiple items in this chunk resolve to the same
     // episode (e.g. two different panel IDs for the same dub/sub variant), only

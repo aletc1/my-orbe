@@ -361,6 +361,77 @@ describe.skipIf(!DATABASE_URL || !REDIS_URL)('ingestChunk (DB + Redis)', () => {
     expect(ep2Row[0]?.externalId).toBe('cr-panel-mixed-ep2')
   })
 
+  it('adopts missing seasons/episodes from raw metadata when the catalog has no matching coordinate (self-heals corrupt catalog)', async () => {
+    // Regression for the DAN DA DAN issue: Crunchyroll's web app numbers seasons
+    // 2 and 3 while the CMS catalog returns 1 and 2 (or returns weird/duplicated
+    // data). With only the existing exact-match fallback, every sync after a
+    // catalog upsert silently dropped the user's history. The fallback now
+    // adopts the item's raw metadata into the catalog when no episode is found
+    // at (showId, season_number, episode_number), so progress is preserved and
+    // future fast-path syncs resolve the panel ID directly.
+    const userId = await makeUser()
+    const showId = await makeShow()
+    await db.insert(showProviders).values({
+      showId, providerKey: 'crunchyroll', externalId: 'cr-show-adopt',
+    }).onConflictDoNothing()
+
+    // No seasons / episodes / episode_providers seeded — everything must be
+    // adopted from the items' raw metadata.
+
+    await ingestChunk(
+      db, userId, 'crunchyroll',
+      [
+        {
+          externalItemId: 'cr-panel-adopt-s2e1',
+          externalShowId: 'cr-show-adopt',
+          watchedAt: new Date('2024-10-04'),
+          fullyWatched: true,
+          raw: { season_number: 2, episode_number: 1, episode_air_date: '2024-10-04', title: 'Episode One' },
+        },
+        {
+          externalItemId: 'cr-panel-adopt-s3e13',
+          externalShowId: 'cr-show-adopt',
+          watchedAt: new Date('2025-07-04'),
+          fullyWatched: true,
+          raw: { season_number: 3, episode_number: 13, episode_air_date: '2025-07-03' },
+        },
+      ],
+      [],
+      randomUUID(),
+      null,
+      redis,
+    )
+
+    // Both seasons must exist now.
+    const seasonRows = await db.select().from(seasons).where(eq(seasons.showId, showId))
+    expect(seasonRows.map((s) => s.seasonNumber).sort()).toEqual([2, 3])
+
+    // Both episodes must exist with metadata propagated from raw where present.
+    const epRows = await db.select().from(episodes).where(eq(episodes.showId, showId))
+    expect(epRows).toHaveLength(2)
+    const s2 = seasonRows.find((s) => s.seasonNumber === 2)!
+    const s3 = seasonRows.find((s) => s.seasonNumber === 3)!
+    const e1 = epRows.find((e) => e.seasonId === s2.id && e.episodeNumber === 1)
+    const e13 = epRows.find((e) => e.seasonId === s3.id && e.episodeNumber === 13)
+    expect(e1?.title).toBe('Episode One')
+    expect(e1?.airDate).toBe('2024-10-04')
+    expect(e13?.airDate).toBe('2025-07-03')
+
+    // Panel IDs must be wired into episode_providers so the fast path resolves
+    // them on the next sync.
+    const epProviderRows = await db.select().from(episodeProviders)
+      .where(and(eq(episodeProviders.providerKey, 'crunchyroll'), inArray(episodeProviders.episodeId, [e1!.id, e13!.id])))
+    const byEp = new Map(epProviderRows.map((r) => [r.episodeId, r.externalId]))
+    expect(byEp.get(e1!.id)).toBe('cr-panel-adopt-s2e1')
+    expect(byEp.get(e13!.id)).toBe('cr-panel-adopt-s3e13')
+
+    // user_episode_progress was created for both items.
+    const progress = await db.select().from(userEpisodeProgress)
+      .where(eq(userEpisodeProgress.userId, userId))
+    expect(progress).toHaveLength(2)
+    expect(progress.every((p) => p.watched)).toBe(true)
+  })
+
   it('skips items via the metadata fallback when raw lacks season/episode numbers', async () => {
     // Items that arrive without season/episode metadata cannot be resolved by the
     // fallback and must remain skipped (counted as itemsSkipped, no FK violations).
