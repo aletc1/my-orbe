@@ -1,6 +1,6 @@
 import { eq, and, count, sql } from 'drizzle-orm'
 import type { DbClient } from '@kyomiru/db/client'
-import { userEpisodeProgress, userShowState, episodes, type showStatusEnum } from '@kyomiru/db/schema'
+import { userEpisodeProgress, userShowState, episodes, seasons, type showStatusEnum } from '@kyomiru/db/schema'
 
 type ShowStatus = typeof showStatusEnum.enumValues[number]
 
@@ -14,6 +14,8 @@ export const airedEpisodesFilter = () =>
 export interface StatusInput {
   total: number
   watched: number
+  // Seasons where every aired episode is unwatched. Drives the whole-season new_content rule.
+  unwatchedWholeAiredSeasons: number
   existingStatus: ShowStatus
   existingTotalEpisodes: number
   existingQueuePosition: number | null
@@ -25,7 +27,7 @@ export interface StatusResult {
 }
 
 export function decideShowStatus(input: StatusInput): StatusResult {
-  const { total, watched, existingStatus, existingTotalEpisodes, existingQueuePosition } = input
+  const { total, watched, unwatchedWholeAiredSeasons, existingStatus, existingTotalEpisodes, existingQueuePosition } = input
 
   let status: ShowStatus
 
@@ -34,6 +36,9 @@ export function decideShowStatus(input: StatusInput): StatusResult {
   } else if (existingStatus === 'watched' && total > existingTotalEpisodes && watched < total) {
     status = 'new_content'
   } else if (existingStatus === 'new_content' && watched < total) {
+    status = 'new_content'
+  } else if (watched > 0 && watched < total && unwatchedWholeAiredSeasons > 0) {
+    // User has started the show but whole aired seasons remain completely unwatched.
     status = 'new_content'
   } else {
     status = 'in_progress'
@@ -69,6 +74,31 @@ export async function recomputeUserShowState(
 
   const watched = watchedRow?.count ?? 0
 
+  // Count seasons that have aired episodes but zero watched by this user.
+  const [unwatchedSeasonsRow] = await db
+    .select({ count: count() })
+    .from(seasons)
+    .where(
+      and(
+        eq(seasons.showId, showId),
+        sql`(
+          SELECT COUNT(*) FROM ${episodes}
+          WHERE ${episodes.seasonId} = ${seasons.id}
+            AND (${episodes.airDate} IS NULL OR ${episodes.airDate} <= CURRENT_DATE)
+        ) > 0`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${episodes}
+          JOIN ${userEpisodeProgress} ON ${userEpisodeProgress.episodeId} = ${episodes.id}
+          WHERE ${episodes.seasonId} = ${seasons.id}
+            AND ${userEpisodeProgress.userId} = ${userId}
+            AND ${userEpisodeProgress.watched} = true
+            AND (${episodes.airDate} IS NULL OR ${episodes.airDate} <= CURRENT_DATE)
+        )`,
+      ),
+    )
+
+  const unwatchedWholeAiredSeasons = unwatchedSeasonsRow?.count ?? 0
+
   // Get existing state
   const [existing] = await db
     .select()
@@ -89,6 +119,7 @@ export async function recomputeUserShowState(
   const { status: newStatus, queuePosition } = decideShowStatus({
     total,
     watched,
+    unwatchedWholeAiredSeasons,
     existingStatus: existing.status as ShowStatus,
     existingTotalEpisodes: existing.totalEpisodes,
     existingQueuePosition: existing.queuePosition,

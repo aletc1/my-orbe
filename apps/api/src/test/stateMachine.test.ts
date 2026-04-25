@@ -5,6 +5,7 @@ import type { StatusInput } from '../services/stateMachine.js'
 const base: StatusInput = {
   total: 12,
   watched: 6,
+  unwatchedWholeAiredSeasons: 0,
   existingStatus: 'in_progress',
   existingTotalEpisodes: 12,
   existingQueuePosition: 3,
@@ -19,7 +20,7 @@ describe('decideShowStatus', () => {
     expect(decideShowStatus({ ...base, total: 12, watched: 12 }).queuePosition).toBeNull()
   })
 
-  it('returns in_progress when partially watched', () => {
+  it('returns in_progress when partially watched (single season, none fully skipped)', () => {
     expect(decideShowStatus({ ...base, total: 12, watched: 6 }).status).toBe('in_progress')
   })
 
@@ -40,6 +41,7 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 13,
         watched: 12,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'watched',
         existingTotalEpisodes: 12,
         existingQueuePosition: null,
@@ -52,6 +54,7 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 12,
         watched: 11,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'watched',
         existingTotalEpisodes: 12,
         existingQueuePosition: null,
@@ -63,6 +66,7 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 12,
         watched: 12,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'watched',
         existingTotalEpisodes: 12,
         existingQueuePosition: null,
@@ -76,6 +80,7 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 13,
         watched: 12,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'new_content',
         existingTotalEpisodes: 13,
         existingQueuePosition: null,
@@ -87,6 +92,7 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 13,
         watched: 13,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'new_content',
         existingTotalEpisodes: 13,
         existingQueuePosition: null,
@@ -98,11 +104,62 @@ describe('decideShowStatus', () => {
       const result = decideShowStatus({
         total: 15,
         watched: 12,
+        unwatchedWholeAiredSeasons: 0,
         existingStatus: 'new_content',
         existingTotalEpisodes: 14,
         existingQueuePosition: null,
       })
       expect(result.status).toBe('new_content')
+    })
+  })
+
+  describe('whole-season new_content', () => {
+    it('flips in_progress to new_content when a whole aired season is unwatched and user has started the show', () => {
+      const result = decideShowStatus({
+        total: 37,
+        watched: 1,
+        unwatchedWholeAiredSeasons: 2,
+        existingStatus: 'in_progress',
+        existingTotalEpisodes: 37,
+        existingQueuePosition: null,
+      })
+      expect(result.status).toBe('new_content')
+    })
+
+    it('does NOT fire when user has watched nothing (cold add to library)', () => {
+      const result = decideShowStatus({
+        total: 24,
+        watched: 0,
+        unwatchedWholeAiredSeasons: 2,
+        existingStatus: 'in_progress',
+        existingTotalEpisodes: 24,
+        existingQueuePosition: null,
+      })
+      expect(result.status).toBe('in_progress')
+    })
+
+    it('does NOT fire for single-season partial watch with no skipped seasons', () => {
+      const result = decideShowStatus({
+        total: 12,
+        watched: 6,
+        unwatchedWholeAiredSeasons: 0,
+        existingStatus: 'in_progress',
+        existingTotalEpisodes: 12,
+        existingQueuePosition: null,
+      })
+      expect(result.status).toBe('in_progress')
+    })
+
+    it('watched beats whole-season rule when user is fully caught up', () => {
+      const result = decideShowStatus({
+        total: 12,
+        watched: 12,
+        unwatchedWholeAiredSeasons: 1,
+        existingStatus: 'in_progress',
+        existingTotalEpisodes: 12,
+        existingQueuePosition: null,
+      })
+      expect(result.status).toBe('watched')
     })
   })
 })
