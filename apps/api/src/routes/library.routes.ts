@@ -8,7 +8,11 @@ import { pickLocalized, resolveRequestLocales } from '../util/locale.js'
 export async function libraryRoutes(app: FastifyInstance) {
   app.get('/library', { preHandler: app.requireAuth }, async (req, reply) => {
     const userId = req.session.get('userId')!
-    const { q, status, sort, provider, kind, limit } = LibraryQuerySchema.parse(req.query)
+    const parsed = LibraryQuerySchema.parse(req.query)
+    const { status, sort, provider, kind, limit } = parsed
+    // Trim so a whitespace-only `?q= ` doesn't trigger the search branch
+    // (trigrams space-pad, so `' ' <% anything` would match nearly all rows).
+    const q = parsed.q?.trim() ? parsed.q.trim() : undefined
 
     // Resolve locale preference: saved setting > Accept-Language > en-US.
     const [userRow] = await app.db
@@ -29,11 +33,19 @@ export async function libraryRoutes(app: FastifyInstance) {
       WHERE show_providers.show_id = ${shows.id}
         AND show_providers.provider_key = ${provider}
     )`)
-    // FTS via the tsvector maintained by the shows_search_tsv_update trigger.
-    // Covers all locale values in shows.titles / shows.descriptions, and uses
-    // the existing shows_search_tsv_idx GIN index — unlike the previous ilike
-    // which was unindexed and English-only.
-    if (q) conditions.push(sql`${shows.searchTsv} @@ websearch_to_tsquery('simple', ${q})`)
+    // Hybrid: tsvector FTS for whole-word/phrase matches (uses shows_search_tsv_idx)
+    // + word_similarity for fuzzy/prefix/accent-stripped matches. Both branches
+    // apply immutable_unaccent so 'akira' matches stored 'Ákira'. We use the
+    // explicit `word_similarity(...) > 0.3` predicate rather than the `<%`
+    // operator so behavior doesn't depend on the per-session
+    // pg_trgm.word_similarity_threshold GUC (which the postgres-js pool may not
+    // pick up immediately after migrations). The trigram GIN index isn't used
+    // for this branch, but a per-user library is small enough that the seqscan
+    // over the join result is negligible.
+    if (q) conditions.push(sql`(
+      ${shows.searchTsv} @@ websearch_to_tsquery('simple', immutable_unaccent(${q}))
+      OR word_similarity(lower(immutable_unaccent(${q})), ${shows.searchNormalized}) > 0.3
+    )`)
 
     const lastWatchedSql = sql`(
       SELECT MAX(uep.watched_at)
@@ -59,7 +71,10 @@ export async function libraryRoutes(app: FastifyInstance) {
       queue_position: sql`${userShowState.queuePosition} ASC NULLS LAST`,
     }
 
-    const orderBy = orderMap[sort as keyof typeof orderMap] ?? desc(userShowState.lastActivityAt)
+    // When the user is searching, relevance beats their sort preference.
+    const orderBy = q
+      ? sql`word_similarity(lower(immutable_unaccent(${q})), ${shows.searchNormalized}) DESC`
+      : (orderMap[sort as keyof typeof orderMap] ?? desc(userShowState.lastActivityAt))
 
     const selectedCols = {
       id: shows.id,
