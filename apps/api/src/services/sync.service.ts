@@ -226,6 +226,71 @@ export function isWatched(playhead: number | undefined, duration: number | undef
 
 export type ShowResolver = (externalShowId: string) => Promise<ShowTree | null>
 
+/**
+ * Recovers episode mappings for items whose resolved episode IDs were deleted
+ * by a concurrent merge between step 4 (outside-transaction resolution) and
+ * step 6b (inside-transaction validation) of ingestChunk.
+ *
+ * Mutates the provided maps and set in place: `episodeIdByExtItemId` is
+ * updated to point at the canonical episode IDs the merge installed,
+ * `showIdByEpisodeId` is populated for those new IDs, and `stillExistingEpSet`
+ * is extended with any newly-validated canonical IDs. Exported so the recovery
+ * branch can be exercised by integration tests directly without needing to
+ * reproduce the merge race timing inside ingestChunk.
+ *
+ * Accepts either a top-level `DbClient` or a transaction object — both expose
+ * the same query API. In production this is always called with the chunk
+ * transaction's `tx`.
+ */
+export async function reResolveOrphanedEpisodes(
+  tx: DbClient,
+  providerKey: string,
+  resolvedItems: { externalItemId: string }[],
+  episodeIdByExtItemId: Map<string, string>,
+  showIdByEpisodeId: Map<string, string>,
+  stillExistingEpSet: Set<string>,
+): Promise<void> {
+  const orphanExtIds = resolvedItems
+    .filter((item) => {
+      const epId = episodeIdByExtItemId.get(item.externalItemId)
+      return epId !== undefined && !stillExistingEpSet.has(epId)
+    })
+    .map((item) => item.externalItemId)
+
+  if (orphanExtIds.length === 0) return
+
+  for (let i = 0; i < orphanExtIds.length; i += INSERT_BATCH) {
+    const slice = orphanExtIds.slice(i, i + INSERT_BATCH)
+    const reResolved = await tx
+      .select({ externalId: episodeProviders.externalId, episodeId: episodeProviders.episodeId })
+      .from(episodeProviders)
+      .where(and(eq(episodeProviders.providerKey, providerKey), inArray(episodeProviders.externalId, slice)))
+    for (const r of reResolved) episodeIdByExtItemId.set(r.externalId, r.episodeId)
+  }
+
+  // Validate the remapped canonical episode IDs and populate showIdByEpisodeId
+  // for them. The `!stillExistingEpSet.has` filter is an optimization for the
+  // case where two stale ext-IDs both remap to the same canonical episode ID
+  // that was already validated via a different (non-orphaned) ext-ID — that ID
+  // is already in the set and showIdByEpisodeId, so there's nothing to add.
+  const remappedEpIds = orphanExtIds
+    .map((id) => episodeIdByExtItemId.get(id))
+    .filter((id): id is string => id !== undefined && !stillExistingEpSet.has(id))
+  if (remappedEpIds.length === 0) return
+
+  for (let i = 0; i < remappedEpIds.length; i += INSERT_BATCH) {
+    const slice = remappedEpIds.slice(i, i + INSERT_BATCH)
+    const rows = await tx
+      .select({ id: episodes.id, showId: episodes.showId })
+      .from(episodes)
+      .where(inArray(episodes.id, slice))
+    for (const r of rows) {
+      stillExistingEpSet.add(r.id)
+      showIdByEpisodeId.set(r.id, r.showId)
+    }
+  }
+}
+
 interface IngestCounters {
   itemsIngested: number
   itemsNew: number
@@ -515,12 +580,16 @@ export async function ingestChunk(
 
         // 6b. Re-validate episode IDs inside the transaction to guard against a
         // race where the merge worker deletes an episode between step 4 (episode
-        // resolution, outside this transaction) and here. Episodes deleted by a
-        // concurrent merge are silently skipped — their watch_event is still recorded.
-        // A narrow residual race remains: under READ COMMITTED, a merge that
-        // commits between this SELECT and the user_episode_progress INSERT below
-        // can still cause an FK violation. Acceptable because deferred enrichment
-        // (above) eliminates the self-triggered case, which is the common one.
+        // resolution, outside this transaction) and here. Items whose episode IDs
+        // vanished are recovered by re-querying episode_providers — the merge
+        // worker migrates those rows to the canonical episode IDs (mergeShows
+        // step 4) before cascade-deleting the duplicate (step 8), so a fresh
+        // lookup returns the canonical mapping.
+        //
+        // A narrow residual race remains: another merge committing between
+        // recovery here and the user_episode_progress INSERT in step 6e can still
+        // cause an FK violation. Acceptable because deferred enrichment (above)
+        // eliminates the self-triggered case, which is the common one.
         const outerEpIds = [...new Set(resolvedItems.map((item) => episodeIdByExtItemId.get(item.externalItemId)!))]
         const stillExistingEpSet = new Set<string>()
         for (let i = 0; i < outerEpIds.length; i += INSERT_BATCH) {
@@ -528,6 +597,14 @@ export async function ingestChunk(
           const rows = await tx.select({ id: episodes.id }).from(episodes).where(inArray(episodes.id, slice))
           for (const r of rows) stillExistingEpSet.add(r.id)
         }
+
+        if (stillExistingEpSet.size < outerEpIds.length) {
+          await reResolveOrphanedEpisodes(
+            tx, providerKey, resolvedItems,
+            episodeIdByExtItemId, showIdByEpisodeId, stillExistingEpSet,
+          )
+        }
+
         const validResolvedItems = stillExistingEpSet.size < outerEpIds.length
           ? resolvedItems.filter((item) => {
               const epId = episodeIdByExtItemId.get(item.externalItemId)
