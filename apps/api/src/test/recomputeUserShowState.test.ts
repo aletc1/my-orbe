@@ -197,4 +197,133 @@ describe.skipIf(!DATABASE_URL)('recomputeUserShowState (DB)', () => {
     expect(state.watchedEpisodes).toBe(0)
     expect(state.status).toBe('in_progress')
   })
+
+  // ── whole-season new_content rule ────────────────────────────────────────────
+
+  async function setupMultiSeason(opts: {
+    seasonEpisodes: { airDates: (string | null)[]; watchedIndices?: number[] }[]
+    initialStatus?: 'in_progress' | 'watched' | 'new_content'
+    initialTotal?: number
+  }) {
+    const suffix = Math.random().toString(36).slice(2, 10)
+
+    const [user] = await db.insert(users).values({
+      googleSub: `test-${suffix}`,
+      email: `test-${suffix}@example.com`,
+      displayName: `Test ${suffix}`,
+    }).returning({ id: users.id })
+    userId = user!.id
+
+    const [show] = await db.insert(shows).values({
+      canonicalTitle: `Test Show ${suffix}`,
+      titleNormalized: `test show ${suffix}`,
+    }).returning({ id: shows.id })
+    showId = show!.id
+
+    for (let sIdx = 0; sIdx < opts.seasonEpisodes.length; sIdx++) {
+      const { airDates, watchedIndices = [] } = opts.seasonEpisodes[sIdx]!
+
+      const [season] = await db.insert(seasons).values({
+        showId,
+        seasonNumber: sIdx + 1,
+        episodeCount: airDates.length,
+      }).returning({ id: seasons.id })
+      const seasonId = season!.id
+
+      if (airDates.length === 0) continue
+
+      const epRows = await db.insert(episodes).values(
+        airDates.map((airDate, i) => ({
+          seasonId,
+          showId,
+          episodeNumber: i + 1,
+          airDate,
+        })),
+      ).returning({ id: episodes.id })
+
+      if (watchedIndices.length) {
+        await db.insert(userEpisodeProgress).values(
+          watchedIndices.map((i) => ({
+            userId,
+            episodeId: epRows[i]!.id,
+            watched: true,
+            watchedAt: new Date(),
+            lastEventAt: new Date(),
+          })),
+        )
+      }
+    }
+
+    await db.insert(userShowState).values({
+      userId,
+      showId,
+      status: opts.initialStatus ?? 'in_progress',
+      totalEpisodes: opts.initialTotal ?? 0,
+      watchedEpisodes: opts.seasonEpisodes.reduce(
+        (sum, s) => sum + (s.watchedIndices?.length ?? 0), 0,
+      ),
+    })
+  }
+
+  it('flips in_progress to new_content when a whole aired season is unwatched and user has started the show', async () => {
+    // S1: 12 aired, all unwatched. S2: 12 aired, user watches episode 1.
+    await setupMultiSeason({
+      seasonEpisodes: [
+        { airDates: Array.from({ length: 12 }, (_, i) => past(30 + i)) },
+        { airDates: Array.from({ length: 12 }, (_, i) => past(i + 1)), watchedIndices: [0] },
+      ],
+    })
+
+    await recomputeUserShowState(db, userId, showId)
+
+    const state = await readState()
+    expect(state.totalEpisodes).toBe(24)
+    expect(state.watchedEpisodes).toBe(1)
+    expect(state.status).toBe('new_content')
+  })
+
+  it('stays in_progress when user has started every season (no whole-season skip)', async () => {
+    // S1: 12 aired, user watched 1. S2: 12 aired, user watched 1. No whole-skip.
+    await setupMultiSeason({
+      seasonEpisodes: [
+        { airDates: Array.from({ length: 12 }, (_, i) => past(20 + i)), watchedIndices: [0] },
+        { airDates: Array.from({ length: 12 }, (_, i) => past(i + 1)), watchedIndices: [0] },
+      ],
+    })
+
+    await recomputeUserShowState(db, userId, showId)
+
+    const state = await readState()
+    expect(state.status).toBe('in_progress')
+  })
+
+  it('does NOT fire whole-season rule when user has watched nothing at all', async () => {
+    // S1 and S2 both fully unwatched — user never engaged.
+    await setupMultiSeason({
+      seasonEpisodes: [
+        { airDates: Array.from({ length: 12 }, (_, i) => past(20 + i)) },
+        { airDates: Array.from({ length: 12 }, (_, i) => past(i + 1)) },
+      ],
+    })
+
+    await recomputeUserShowState(db, userId, showId)
+
+    const state = await readState()
+    expect(state.status).toBe('in_progress')
+  })
+
+  it('does NOT count future-only seasons as whole unwatched (they are not aired yet)', async () => {
+    // S1: 12 aired, user watches 1. S2: 12 future — should not trigger rule.
+    await setupMultiSeason({
+      seasonEpisodes: [
+        { airDates: Array.from({ length: 12 }, (_, i) => past(i + 1)), watchedIndices: [0] },
+        { airDates: Array.from({ length: 12 }, (_, i) => future(i + 7)) },
+      ],
+    })
+
+    await recomputeUserShowState(db, userId, showId)
+
+    const state = await readState()
+    expect(state.status).toBe('in_progress')
+  })
 })

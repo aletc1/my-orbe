@@ -28,18 +28,19 @@ pnpm -F @kyomiru/api test
 pnpm -F @kyomiru/web typecheck
 
 # One-shot API scripts (require pnpm build first; target compiled dist/)
-pnpm -F @kyomiru/api cron:run                  # Enqueue enrichment for shows with no enrichedAt
-pnpm -F @kyomiru/api backfill:enrichment       # Re-enqueue enrichment for all shows
-pnpm -F @kyomiru/api backfill:state            # Recompute user_show_state for all users
-pnpm -F @kyomiru/api backfill:translations     # Reset enrichedAt for all shows to re-fetch multi-locale titles
-pnpm -F @kyomiru/api backfill:reclassify       # Reset enrichedAt for kind='tv' shows to re-classify (e.g. promote Animation to anime)
-pnpm -F @kyomiru/api recompute:airing          # Enqueue showRefresh for shows whose stored total_episodes drifted from current aired count (run via daily external cron)
-pnpm -F @kyomiru/api approved:add <email> [note]   # Add email to the approved_emails table
-pnpm -F @kyomiru/api approved:remove <email>       # Remove email from approved_emails table
-pnpm -F @kyomiru/api approved:list                 # List all approved emails
-pnpm -F @kyomiru/api enrichment:debug <showId>     # Verbose enrichment diagnostic for a single show (dry-run; add --apply to persist)
-pnpm -F @kyomiru/api queue:status                  # Snapshot of BullMQ queue depth (waiting/active counts); add --watch to stream live job events
-pnpm -F @kyomiru/api merge:scan                    # Re-enqueue enrichment for shows with no tmdb_id (periodic duplicate detection safety net; run daily)
+pnpm -F @kyomiru/api cron:run                         # Enqueue enrichment for shows with no enrichedAt (daily delta — no force flag)
+pnpm -F @kyomiru/api backfill:enrichment              # Enqueue enrichment for shows with no enrichedAt; add --force to reset enrichedAt and re-enqueue all shows
+pnpm -F @kyomiru/api backfill:state                   # Recompute user_show_state for all users
+pnpm -F @kyomiru/api backfill:translations            # Reset enrichedAt for all shows to re-fetch multi-locale titles
+pnpm -F @kyomiru/api backfill:reclassify              # Reset enrichedAt for kind='tv' shows to re-classify (e.g. promote Animation to anime)
+pnpm -F @kyomiru/api recompute:airing                 # Enqueue showRefresh for drifted shows; add --force to enqueue all non-removed shows regardless of drift
+pnpm -F @kyomiru/api approved:add <email> [note]      # Add email to the approved_emails table
+pnpm -F @kyomiru/api approved:remove <email>          # Remove email from approved_emails table
+pnpm -F @kyomiru/api approved:list                    # List all approved emails
+pnpm -F @kyomiru/api enrichment:debug <showId>        # Verbose enrichment diagnostic for a single show (dry-run; add --apply to persist)
+pnpm -F @kyomiru/api queue:status                     # Snapshot of BullMQ queue depth (waiting/active counts); add --watch to stream live job events
+pnpm -F @kyomiru/api queue:clean                      # Drain completed + failed jobs from all queues; --queue=<name> --state=<state> --waiting to scope
+pnpm -F @kyomiru/api merge:scan                       # Re-enqueue enrichment for shows with no tmdb_id; add --force to ignore the 5-attempt retry cap
 ```
 
 The Docker Compose file lives at `infra/compose/docker-compose.dev.yml`.
@@ -89,9 +90,11 @@ This is a **pnpm + Turborepo monorepo** with three apps and four packages.
 **Show status state machine** (`apps/api/src/services/stateMachine.ts`):
 - First ingest → `in_progress` (partial watch) or `watched` (all episodes)
 - `watched` → `new_content` when `total > userShowState.totalEpisodes` and user is behind (a new season/episode appeared)
+- `in_progress` → `new_content` when the user has watched at least one episode AND at least one whole aired season has zero watched episodes (whole-season skip rule). This covers shows where the user started mid-series or new seasons dropped while still in progress.
 - `new_content` is sticky: it clears only when the user fully catches up (→ `watched`) or explicitly via a PATCH route
 - `removed` is a soft delete. `recomputeUserShowState` will not overwrite `removed`; it only refreshes the episode counters. `prev_status` exists as a column for future restore logic.
 - Status is recomputed after every ingest and after enrichment upserts new episodes. Transitioning to `watched` clears `queue_position`.
+- Only aired episodes count (`air_date IS NULL OR air_date <= CURRENT_DATE`), so future seasons do not trigger early.
 
 **Sync flow** — streaming, extension-driven (runs per provider key):
 1. Extension reads the adapter's captured session from `chrome.storage.session` (`capturedSession:<providerKey>`); aborts if missing or expired.
