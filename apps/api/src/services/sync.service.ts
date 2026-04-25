@@ -226,6 +226,11 @@ export function isWatched(playhead: number | undefined, duration: number | undef
 
 export type ShowResolver = (externalShowId: string) => Promise<ShowTree | null>
 
+// Either a top-level DbClient or a drizzle transaction object — both expose
+// the same query API. Used by helpers that run inside a transaction in
+// production but accept a DbClient when called from tests.
+export type DbOrTx = Parameters<Parameters<DbClient['transaction']>[0]>[0] | DbClient
+
 /**
  * Recovers episode mappings for items whose resolved episode IDs were deleted
  * by a concurrent merge between step 4 (outside-transaction resolution) and
@@ -237,13 +242,9 @@ export type ShowResolver = (externalShowId: string) => Promise<ShowTree | null>
  * is extended with any newly-validated canonical IDs. Exported so the recovery
  * branch can be exercised by integration tests directly without needing to
  * reproduce the merge race timing inside ingestChunk.
- *
- * Accepts either a top-level `DbClient` or a transaction object — both expose
- * the same query API. In production this is always called with the chunk
- * transaction's `tx`.
  */
 export async function reResolveOrphanedEpisodes(
-  tx: DbClient,
+  tx: DbOrTx,
   providerKey: string,
   resolvedItems: { externalItemId: string }[],
   episodeIdByExtItemId: Map<string, string>,
