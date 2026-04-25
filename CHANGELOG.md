@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.7.0...kyomiru-v1.7.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* **api:** prune phantom episodes from old catalog shapes ([#61](https://github.com/aletc1/kyomiru/issues/61)) ([df3221b](https://github.com/aletc1/kyomiru/commit/df3221bfe8ffdcde060aa77d5af84401a510e031))
+* **api:** self-heal lost watch progress when catalog and history disagree ([#59](https://github.com/aletc1/kyomiru/issues/59)) ([9fd139c](https://github.com/aletc1/kyomiru/commit/9fd139c6de956c2de71f14e6434b1c38f9ea7d1e))
+
 ## [1.7.0](https://github.com/aletc1/kyomiru/compare/kyomiru-v1.6.1...kyomiru-v1.7.0) (2026-04-25)
 
 
