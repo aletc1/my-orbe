@@ -10,14 +10,14 @@ export default defineConfig({
     TanStackRouterVite({ routesDirectory: './src/routes', generatedRouteTree: './src/routeTree.gen.ts' }),
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
         name: 'Kyomiru',
         short_name: 'Kyomiru',
         description: 'Track your anime and TV show watch history',
-        theme_color: '#09090b',
-        background_color: '#09090b',
+        theme_color: '#090c15',
+        background_color: '#090c15',
         display: 'standalone',
         start_url: '/library',
         icons: [
